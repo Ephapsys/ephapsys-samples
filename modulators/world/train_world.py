@@ -18,7 +18,7 @@ Current behavior:
 - writes a summary artifact explaining that this sample is a scaffold
 
 This keeps the folder structure and DX consistent while the actual world-model
-runtime/evaluation adapter is implemented in the SDK and robot sample.
+runtime/evaluation adapter is implemented in the SDK.
 """
 
 import argparse
