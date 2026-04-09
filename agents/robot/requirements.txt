@@ -1,0 +1,19 @@
+# Core dependencies for Robot agent (audio, TTS/STT, vision)
+# google-auth is used for Google ID token validation when SOCIAL_LOGIN_ENABLED=1.
+google-auth>=2.29.0
+webrtcvad>=2.0.10
+sounddevice
+pyaudio
+opencv-python>=4.8.0
+faiss-cpu>=1.7.4
+rich>=13.7.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+websockets>=13.0
+
+# TTS/transformers stack
+torch>=2.6.0
+transformers>=4.46.0
+safetensors>=0.4.5
+soundfile>=0.12.0
+sentencepiece>=0.1.99
