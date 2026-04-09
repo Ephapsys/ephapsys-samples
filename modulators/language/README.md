@@ -147,39 +147,13 @@ results/modulate_<timestamp>/artifacts/
 
 Since `train_language.py` imports `from ephapsys.modulation import ModulatorClient`, the container must include the Ephapsys SDK. There are four ways to integrate it:
 
-1. **Local source copy (current default for SAMPLES)**  
-   - Dockerfile copies the SDK source tree directly:  
-     ```dockerfile
-     COPY sdk/python/ephapsys /workspace/ephapsys
-     ```  
-   - Works for internal testing without publishing the SDK.
-
-2. **Install from private GitHub repo (pre-release option)**  
-   - Add to Dockerfile:  
-     ```dockerfile
-     RUN pip install git+https://github.com/your-org/ephapsys-sdk.git@main
-     ```  
-   - Requires a GitHub token if the repo is private.
-
-3. **Install from Artifact Registry (internal distribution)**  
-   - Build and upload your SDK wheel (`.whl`) to a private PyPI repository on GCP:  
-     ```bash
-     gcloud artifacts repositories create ephapsys-pypi        --repository-format=python        --location=us-central1        --description="Ephapsys Python packages"
-     ```
-   - Then in Dockerfile:  
-     ```dockerfile
-     RUN pip install --extra-index-url=https://us-central1-python.pkg.dev/ephapsys-dev/ephapsys-pypi/simple ephapsys
-     ```
-
-4. **Install from PyPI (future public release)**  
-   - Once the SDK is published publicly:  
-     ```dockerfile
-     RUN pip install ephapsys
-     ```
+Install the SDK from PyPI:
+```dockerfile
+RUN pip install ephapsys
+```
 
 ---
 
 👉 Summary:  
 - `gcp.env` → infra config (not committed, based on `gcp.env.example`)  
 - `.env` → runtime config (API keys, template IDs, etc.)  
-- SDK available via: local copy (default), private GitHub, private Artifact Registry, or PyPI.  
