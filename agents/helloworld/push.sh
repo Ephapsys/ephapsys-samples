@@ -17,6 +17,8 @@ FORCE_MODULATE=0
 SKIP_BUILD_FLAG=""
 SKIP_PUSH_FLAG=""
 LABEL=""
+BOLD="\033[1m"
+DIM="\033[2m"
 BLUE="\033[36m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
@@ -314,27 +316,42 @@ wait_for_model_download() {
   local model_id="$1"
   local max_attempts="${2:-120}"
   local delay="${3:-5}"
-  local status
+  local status elapsed bar_width=30 filled pct
+  local spinner=('  ' ' .' '...' '. ' '  ')
   for ((i=1; i<=max_attempts; i++)); do
     status=$(curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/models/${model_id}" | jq -r '.status // empty' 2>/dev/null || true)
     case "$status" in
       DOWNLOADING)
-        printf "\r  Downloading model... (%d/%ds)" "$((i * delay))" "$((max_attempts * delay))"
+        elapsed=$((i * delay))
+        pct=$(( (elapsed * 100) / (max_attempts * delay) ))
+        filled=$(( (pct * bar_width) / 100 ))
+        if [[ -t 1 ]]; then
+          printf "\r  ${GOLD}[DOWNLOADING]${RESET} ["
+          for ((b=0; b<bar_width; b++)); do
+            if ((b < filled)); then printf "${GREEN}=${RESET}"; else printf "${BLUE}.${RESET}"; fi
+          done
+          printf "] %3d%% ${DIM}(%ds)${RESET}" "$pct" "$elapsed"
+        fi
         sleep "$delay"
         ;;
       DOWNLOAD_FAILED)
-        echo ""
+        [[ -t 1 ]] && printf "\r\033[2K"
         error "Model download failed on the server"
         exit 1
         ;;
       *)
-        echo ""
-        info "Model download complete (status: ${status})"
+        if [[ -t 1 ]]; then
+          printf "\r\033[2K"
+          printf "  ${GREEN}[DOWNLOADED]${RESET}  ["
+          for ((b=0; b<bar_width; b++)); do printf "${GREEN}=${RESET}"; done
+          printf "] ${GREEN}100%%${RESET}\n"
+        fi
+        info "Model ready (status: ${status})"
         return 0
         ;;
     esac
   done
-  echo ""
+  [[ -t 1 ]] && printf "\r\033[2K"
   error "Model download timed out after $((max_attempts * delay))s"
   exit 1
 }
