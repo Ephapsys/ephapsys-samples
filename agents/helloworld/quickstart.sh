@@ -88,10 +88,14 @@ done
 
 if $FRESH_START; then
   step "Fresh start"
+  FRESH_TAG="v$(date +%Y%m%d-%H%M%S)"
   sed -i '' 's/^MODEL_TEMPLATE_ID=.*/MODEL_TEMPLATE_ID=/' .env 2>/dev/null || sed -i 's/^MODEL_TEMPLATE_ID=.*/MODEL_TEMPLATE_ID=/' .env
   sed -i '' 's/^AGENT_TEMPLATE_ID=.*/AGENT_TEMPLATE_ID=/' .env 2>/dev/null || sed -i 's/^AGENT_TEMPLATE_ID=.*/AGENT_TEMPLATE_ID=/' .env
   rm -rf .ephapsys_state 2>/dev/null || true
-  success "Cleared MODEL_TEMPLATE_ID, AGENT_TEMPLATE_ID, and .ephapsys_state"
+  # Version the labels so push.sh registers new templates instead of reusing existing ones
+  export HELLOWORLD_MODEL_NAME="HelloWorld Starter Model ${FRESH_TAG}"
+  export AGENT_TEMPLATE_NAME="HelloWorld Agent Template ${FRESH_TAG}"
+  success "Cleared state, new templates will be: ${DIM}${FRESH_TAG}${RESET}"
 fi
 
 info "Mode: ${BOLD}${MODE}${RESET}"
