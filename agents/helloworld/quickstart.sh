@@ -25,15 +25,15 @@ banner() {
 }
 
 info() {
-  printf "  ${BLUE}%s${RESET} %s\n" ">" "$*"
+  printf "  ${BLUE}%s${RESET} %b\n" ">" "$*"
 }
 
 success() {
-  printf "  ${GREEN}%s${RESET} %s\n" "+" "$*"
+  printf "  ${GREEN}%s${RESET} %b\n" "+" "$*"
 }
 
 warn() {
-  printf "  ${YELLOW}%s${RESET} %s\n" "!" "$*" >&2
+  printf "  ${YELLOW}%s${RESET} %b\n" "!" "$*" >&2
 }
 
 step() {
