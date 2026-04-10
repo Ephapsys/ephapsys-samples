@@ -103,17 +103,9 @@ if [ -z "$BASE_URL" ] || [ -z "$AOC_ORG_ID" ] || [ -z "$AOC_MODULATION_TOKEN" ] 
 fi
 
 SDK_PACKAGE_SOURCE="${MODULATOR_SDK_PACKAGE_SOURCE:-${SDK_PACKAGE_SOURCE:-pypi}}"
-REPO_ROOT="$(cd "$COMMON_DIR/../.." && pwd)"
-PYPROJECT_PATH="$REPO_ROOT/sdk/python/pyproject.toml"
-SDK_VERSION="$(PYPROJECT_PATH="$PYPROJECT_PATH" python3 - <<'PY'
-import os, pathlib, re
-text = pathlib.Path(os.environ["PYPROJECT_PATH"]).read_text()
-match = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', text)
-print(match.group(1) if match else "0.0.0")
-PY
-)"
+SDK_VERSION="$(python3 -c 'import ephapsys; print(ephapsys.__version__)' 2>/dev/null || echo "0.0.0")"
 if [ "$SDK_VERSION" = "0.0.0" ] || [ -z "$SDK_VERSION" ]; then
-  echo "❌ Unable to determine SDK version from $PYPROJECT_PATH"
+  echo "❌ Unable to determine SDK version. Install ephapsys first: pip install ephapsys"
   exit 1
 fi
 
