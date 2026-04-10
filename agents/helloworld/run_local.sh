@@ -10,8 +10,6 @@ set -euo pipefail
 
 MODE="${1:-run}" # run | check
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/../../../" && pwd)"
-SDK_SETUP_SH="$REPO_DIR/scripts/setup.sh"
 
 info() {
   echo "[INFO] $*"
@@ -44,48 +42,50 @@ ensure_runtime_env() {
   sdk_source="${HELLOWORLD_SDK_PACKAGE_SOURCE:-${SDK_PACKAGE_SOURCE:-pypi}}"
 
   if [ "${HELLOWORLD_USE_LOCAL_SDK:-0}" = "1" ]; then
+    local sdk_path="${EPHAPSYS_SDK_PATH:-../../../sdk/python}"
+    if [ ! -d "$sdk_path" ]; then
+      error "Local SDK path not found at $sdk_path (set EPHAPSYS_SDK_PATH to override)"
+      exit 1
+    fi
     if [ ! -d "$venv" ]; then
       info "Creating local virtualenv at $venv"
       python3 -m venv "$venv"
     fi
     # shellcheck disable=SC1091
     source "$venv/bin/activate"
-    if [ ! -d "../../../sdk/python" ]; then
-      error "Local SDK path not found at ../../../sdk/python"
-      exit 1
-    fi
     info "Installing local Ephapsys SDK into $venv"
     PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip --quiet
-    PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install -e "../../../sdk/python[${sdk_extras}]" --quiet
+    PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install -e "${sdk_path}[${sdk_extras}]" --quiet
     return
   fi
 
-  if [ ! -x "$SDK_SETUP_SH" ]; then
-    error "SDK setup helper not found at $SDK_SETUP_SH"
-    exit 1
+  if [ ! -d "$venv" ]; then
+    info "Creating virtualenv at $venv"
+    python3 -m venv "$venv"
   fi
+  # shellcheck disable=SC1091
+  source "$venv/bin/activate"
 
+  local pip_args="--quiet"
+  local pkg="ephapsys[${sdk_extras}]"
   case "$sdk_source" in
-    pypi|testpypi)
+    pypi)
+      ;;
+    testpypi)
+      pip_args="$pip_args --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple"
       ;;
     *)
-      error "Unsupported HELLOWORLD_SDK_PACKAGE_SOURCE: $sdk_source"
-      error "Use pypi, testpypi, or set HELLOWORLD_USE_LOCAL_SDK=1 for repo-local development."
+      error "Unsupported SDK_PACKAGE_SOURCE: $sdk_source (use pypi or testpypi)"
       exit 1
       ;;
   esac
 
-  info "Ensuring latest published Ephapsys SDK from $sdk_source in $venv"
-  "$SDK_SETUP_SH" "--$sdk_source" --venv "$venv" --extras "$sdk_extras"
-  # shellcheck disable=SC1091
-  source "$venv/bin/activate"
+  info "Installing Ephapsys SDK from $sdk_source"
+  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip $pip_args
+  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install "$pkg" $pip_args
 
-  requirements_ok=1
   if ! python3 -c "import ephapsys, transformers" >/dev/null 2>&1; then
-    requirements_ok=0
-  fi
-  if [ "$requirements_ok" -ne 1 ]; then
-    error "Published SDK environment is missing required runtime dependencies."
+    error "SDK environment is missing required runtime dependencies."
     exit 1
   fi
 }

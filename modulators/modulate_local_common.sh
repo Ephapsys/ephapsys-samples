@@ -3,8 +3,6 @@
 set -euo pipefail
 
 MODULATOR_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODULATOR_REPO_DIR="$(cd "$MODULATOR_COMMON_DIR/../../" && pwd)"
-MODULATOR_SDK_SETUP_SH="$MODULATOR_REPO_DIR/scripts/setup.sh"
 
 modulator_info() {
   echo "[INFO] $*"
@@ -45,10 +43,10 @@ modulator_load_env_file() {
 }
 
 modulator_prepare_env() {
-  local venv sdk_extras sdk_source sdk_version
-  venv="${MODULATOR_VENV:-$MODULATOR_REPO_DIR/scripts/venvs/modulators}"
+  local venv sdk_extras sdk_source sdk_version pip_args pkg
+  venv="${MODULATOR_VENV:-.venv}"
   sdk_extras="${MODULATOR_SDK_EXTRAS:-modulation,audio,vision,embedding,eval}"
-  sdk_source="${MODULATOR_SDK_PACKAGE_SOURCE:-${SDK_PACKAGE_SOURCE:-local}}"
+  sdk_source="${MODULATOR_SDK_PACKAGE_SOURCE:-${SDK_PACKAGE_SOURCE:-pypi}}"
   sdk_version="${MODULATOR_SDK_VERSION:-${SDK_VERSION:-}}"
 
   if [ "${MODULATOR_SKIP_SDK_SETUP:-0}" = "1" ]; then
@@ -60,30 +58,34 @@ modulator_prepare_env() {
     return
   fi
 
-  if [ ! -x "$MODULATOR_SDK_SETUP_SH" ]; then
-    modulator_error "SDK setup helper not found at $MODULATOR_SDK_SETUP_SH"
-    exit 1
+  if [ ! -d "$venv" ]; then
+    modulator_info "Creating virtualenv at $venv"
+    python3 -m venv "$venv"
+  fi
+  # shellcheck disable=SC1090
+  source "$venv/bin/activate"
+
+  pip_args="--quiet"
+  pkg="ephapsys[${sdk_extras}]"
+  if [ -n "$sdk_version" ]; then
+    pkg="ephapsys[${sdk_extras}]==${sdk_version}"
   fi
 
   case "$sdk_source" in
-    local|pypi|testpypi)
+    pypi)
+      ;;
+    testpypi)
+      pip_args="$pip_args --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple"
       ;;
     *)
-      modulator_error "Unsupported MODULATOR_SDK_PACKAGE_SOURCE: $sdk_source"
-      modulator_error "Use local, pypi, or testpypi."
+      modulator_error "Unsupported SDK_PACKAGE_SOURCE: $sdk_source (use pypi or testpypi)"
       exit 1
       ;;
   esac
 
-  modulator_info "Ensuring Ephapsys SDK from $sdk_source in $venv"
-  if [ -n "$sdk_version" ] && [ "$sdk_source" != "local" ]; then
-    "$MODULATOR_SDK_SETUP_SH" "--$sdk_source" --venv "$venv" --extras "$sdk_extras" --version "$sdk_version"
-  else
-    "$MODULATOR_SDK_SETUP_SH" "--$sdk_source" --venv "$venv" --extras "$sdk_extras"
-  fi
-
-  # shellcheck disable=SC1090
-  source "$venv/bin/activate"
+  modulator_info "Installing Ephapsys SDK from $sdk_source"
+  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip $pip_args
+  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install "$pkg" $pip_args
 
   if ! python3 -c "import ephapsys" >/dev/null 2>&1; then
     modulator_error "Prepared modulator environment does not provide the ephapsys package."

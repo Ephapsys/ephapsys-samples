@@ -61,8 +61,7 @@ cleanup_temp_files() {
 trap cleanup_temp_files EXIT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../" && pwd)"
-PYPROJECT="$REPO_ROOT/sdk/python/pyproject.toml"
+REPO_ROOT="$SCRIPT_DIR"
 GCP_ENV_FILE="${GCP_ENV_FILE:-${HELLOWORLD_GCP_ENV_FILE:-$SCRIPT_DIR/.env.gcp}}"
 INTERACTIVE=true
 CPU_ONLY=true
@@ -177,7 +176,6 @@ for var in "${REQUIRED_GCP_VARS[@]}"; do
   fi
 done
 
-GLOBAL_ENV_DIR="$REPO_ROOT/Product"
 ENV_FILE_LOCAL="${GCP_RUNTIME_ENV_FILE:-$SCRIPT_DIR/.env}"
 ACTIVE_ENV_FILE="$ENV_FILE_LOCAL"
 
@@ -294,16 +292,10 @@ else
   warn "gcloud has no active account; IAM auto-grant skipped. Ensure your account has roles/compute.instanceAdmin.v1."
 fi
 
-SDK_VERSION="$(PYPROJECT_PATH="$PYPROJECT" python3 - <<'PY'
-import os, pathlib, re
-text = pathlib.Path(os.environ["PYPROJECT_PATH"]).read_text()
-match = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', text)
-print(match.group(1) if match else "0.0.0")
-PY
-)"
+SDK_VERSION="$(python3 -c 'import ephapsys; print(ephapsys.__version__)' 2>/dev/null || echo "0.0.0")"
 
 if [[ "$SDK_VERSION" == "0.0.0" || -z "$SDK_VERSION" ]]; then
-  printf "${MAGENTA}❌ Unable to read SDK version from SDK/python/pyproject.toml${RESET}\n"
+  printf "${MAGENTA}❌ Unable to determine SDK version. Install ephapsys first: pip install ephapsys${RESET}\n"
   exit 1
 fi
 

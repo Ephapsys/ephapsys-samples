@@ -7,8 +7,6 @@ set -euo pipefail
 
 MODE="${1:-run}" # run | smoke
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/../../../" && pwd)"
-SDK_SETUP_SH="$REPO_DIR/scripts/setup.sh"
 
 info() {
   echo "[INFO] $*"
@@ -25,32 +23,37 @@ ensure_runtime_env() {
   sdk_source="${MODULATOR_SDK_PACKAGE_SOURCE:-${SDK_PACKAGE_SOURCE:-local}}"
   sdk_version="${MODULATOR_SDK_VERSION:-${SDK_VERSION:-}}"
 
-  if [ ! -x "$SDK_SETUP_SH" ]; then
-    error "SDK setup helper not found at $SDK_SETUP_SH"
-    exit 1
-  fi
-
-  case "$sdk_source" in
-    local|pypi|testpypi)
-      ;;
-    *)
-      error "Unsupported MODULATOR_SDK_PACKAGE_SOURCE: $sdk_source"
-      error "Use local, pypi, or testpypi."
-      exit 1
-      ;;
-  esac
-
-  info "Ensuring Ephapsys SDK from $sdk_source in $venv"
-  if [ -n "$sdk_version" ] && [ "$sdk_source" != "local" ]; then
-    "$SDK_SETUP_SH" "--$sdk_source" --venv "$venv" --extras "$sdk_extras" --version "$sdk_version"
-  else
-    "$SDK_SETUP_SH" "--$sdk_source" --venv "$venv" --extras "$sdk_extras"
+  if [ ! -d "$venv" ]; then
+    info "Creating virtualenv at $venv"
+    python3 -m venv "$venv"
   fi
   # shellcheck disable=SC1090
   source "$venv/bin/activate"
 
+  local pip_args="--quiet"
+  local pkg="ephapsys[${sdk_extras}]"
+  if [ -n "$sdk_version" ]; then
+    pkg="ephapsys[${sdk_extras}]==${sdk_version}"
+  fi
+
+  case "$sdk_source" in
+    pypi)
+      ;;
+    testpypi)
+      pip_args="$pip_args --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple"
+      ;;
+    *)
+      error "Unsupported SDK_PACKAGE_SOURCE: $sdk_source (use pypi or testpypi)"
+      exit 1
+      ;;
+  esac
+
+  info "Installing Ephapsys SDK from $sdk_source"
+  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip $pip_args
+  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install "$pkg" $pip_args
+
   if ! python3 -c "import ephapsys" >/dev/null 2>&1; then
-    error "Prepared modulator environment does not provide the ephapsys package."
+    error "SDK environment is missing required runtime dependencies."
     exit 1
   fi
 
