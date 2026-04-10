@@ -58,16 +58,17 @@ modulator_prepare_env() {
     return
   fi
 
-  if python3 -c "import ephapsys" >/dev/null 2>&1 && [ "$sdk_source" != "testpypi" ]; then
-    modulator_info "Ephapsys SDK already installed, skipping install"
-  else
-    if [ ! -d "$venv" ]; then
-      modulator_info "Creating virtualenv at $venv"
-      python3 -m venv "$venv"
-    fi
-    # shellcheck disable=SC1090
-    source "$venv/bin/activate"
+  # Always use a dedicated venv to avoid version conflicts with system packages
+  if [ ! -d "$venv" ]; then
+    modulator_info "Creating virtualenv at $venv"
+    python3 -m venv "$venv"
+  fi
+  # shellcheck disable=SC1090
+  source "$venv/bin/activate"
 
+  if python3 -c "import ephapsys" >/dev/null 2>&1 && [ "$sdk_source" != "testpypi" ]; then
+    modulator_info "Ephapsys SDK already installed in venv"
+  else
     pip_args="--quiet"
     pkg="ephapsys[${sdk_extras}]"
     if [ -n "$sdk_version" ]; then
