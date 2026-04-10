@@ -16,7 +16,7 @@ Use the matching install command before running each sample:
 For `agents/helloworld`, the local wrapper can bootstrap a fresh checkout for you:
 
 ```bash
-cd samples/agents/helloworld
+cd agents/helloworld
 ./quickstart.sh
 ```
 
