@@ -59,6 +59,11 @@ ensure_runtime_env() {
     return
   fi
 
+  if python3 -c "import ephapsys" >/dev/null 2>&1; then
+    info "Ephapsys SDK already installed, skipping install"
+    return
+  fi
+
   if [ ! -d "$venv" ]; then
     info "Creating virtualenv at $venv"
     python3 -m venv "$venv"
@@ -84,8 +89,8 @@ ensure_runtime_env() {
   PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip $pip_args
   PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install "$pkg" $pip_args
 
-  if ! python3 -c "import ephapsys, transformers" >/dev/null 2>&1; then
-    error "SDK environment is missing required runtime dependencies."
+  if ! python3 -c "import ephapsys" >/dev/null 2>&1; then
+    error "SDK installation failed. Check your Python environment."
     exit 1
   fi
 }
