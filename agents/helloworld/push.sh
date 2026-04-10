@@ -14,6 +14,7 @@ MODE="local"
 GPU="t4"
 IDEMPOTENT=1
 FORCE_MODULATE=0
+FORCE_REGISTER=0
 SKIP_BUILD_FLAG=""
 SKIP_PUSH_FLAG=""
 LABEL=""
@@ -75,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force-modulate)
       FORCE_MODULATE=1
+      shift
+      ;;
+    --force-register)
+      FORCE_REGISTER=1
       shift
       ;;
     --no-build)
@@ -503,7 +508,11 @@ create_agent_template() {
     -d "$payload"
 }
 
-MODEL_TEMPLATE_ID="$(resolve_model_template || true)"
+if [[ "$FORCE_REGISTER" -eq 1 ]]; then
+  MODEL_TEMPLATE_ID=""
+else
+  MODEL_TEMPLATE_ID="$(resolve_model_template || true)"
+fi
 print_plan
 step "Resolving existing model template"
 if [[ -z "$MODEL_TEMPLATE_ID" ]]; then

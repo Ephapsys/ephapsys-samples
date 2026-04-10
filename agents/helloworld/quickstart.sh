@@ -193,9 +193,9 @@ if $FRESH_START; then
   export HELLOWORLD_MODEL_NAME
   export AGENT_TEMPLATE_NAME
   if [[ "$MODE" == "gcp" ]]; then
-    ./push.sh --mode gcp --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
+    ./push.sh --mode gcp --force-register --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
   else
-    ./push.sh --mode local --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
+    ./push.sh --mode local --force-register --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
   fi
 elif ! resolve_existing_templates; then
   step "Bootstrapping (first-time setup)"
