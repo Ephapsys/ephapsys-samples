@@ -58,38 +58,42 @@ modulator_prepare_env() {
     return
   fi
 
-  if [ ! -d "$venv" ]; then
-    modulator_info "Creating virtualenv at $venv"
-    python3 -m venv "$venv"
-  fi
-  # shellcheck disable=SC1090
-  source "$venv/bin/activate"
+  if python3 -c "import ephapsys" >/dev/null 2>&1 && [ "$sdk_source" != "testpypi" ]; then
+    modulator_info "Ephapsys SDK already installed, skipping install"
+  else
+    if [ ! -d "$venv" ]; then
+      modulator_info "Creating virtualenv at $venv"
+      python3 -m venv "$venv"
+    fi
+    # shellcheck disable=SC1090
+    source "$venv/bin/activate"
 
-  pip_args="--quiet"
-  pkg="ephapsys[${sdk_extras}]"
-  if [ -n "$sdk_version" ]; then
-    pkg="ephapsys[${sdk_extras}]==${sdk_version}"
-  fi
+    pip_args="--quiet"
+    pkg="ephapsys[${sdk_extras}]"
+    if [ -n "$sdk_version" ]; then
+      pkg="ephapsys[${sdk_extras}]==${sdk_version}"
+    fi
 
-  case "$sdk_source" in
-    pypi)
-      ;;
-    testpypi)
-      pip_args="$pip_args --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple"
-      ;;
-    *)
-      modulator_error "Unsupported SDK_PACKAGE_SOURCE: $sdk_source (use pypi or testpypi)"
+    case "$sdk_source" in
+      pypi)
+        ;;
+      testpypi)
+        pip_args="$pip_args --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple"
+        ;;
+      *)
+        modulator_error "Unsupported SDK_PACKAGE_SOURCE: $sdk_source (use pypi or testpypi)"
+        exit 1
+        ;;
+    esac
+
+    modulator_info "Installing Ephapsys SDK from $sdk_source"
+    PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip $pip_args
+    PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install "$pkg" $pip_args
+
+    if ! python3 -c "import ephapsys" >/dev/null 2>&1; then
+      modulator_error "SDK installation failed. Check your Python environment."
       exit 1
-      ;;
-  esac
-
-  modulator_info "Installing Ephapsys SDK from $sdk_source"
-  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip $pip_args
-  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install "$pkg" $pip_args
-
-  if ! python3 -c "import ephapsys" >/dev/null 2>&1; then
-    modulator_error "Prepared modulator environment does not provide the ephapsys package."
-    exit 1
+    fi
   fi
 
   if [ -f "$MODULATOR_COMMON_DIR/requirements.gcp.txt" ]; then
