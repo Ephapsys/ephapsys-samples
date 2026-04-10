@@ -310,6 +310,35 @@ register_model_template() {
   info "Model registration request accepted by AOC."
 }
 
+wait_for_model_download() {
+  local model_id="$1"
+  local max_attempts="${2:-120}"
+  local delay="${3:-5}"
+  local status
+  for ((i=1; i<=max_attempts; i++)); do
+    status=$(curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/models/${model_id}" | jq -r '.status // empty' 2>/dev/null || true)
+    case "$status" in
+      DOWNLOADING)
+        printf "\r  Downloading model... (%d/%ds)" "$((i * delay))" "$((max_attempts * delay))"
+        sleep "$delay"
+        ;;
+      DOWNLOAD_FAILED)
+        echo ""
+        error "Model download failed on the server"
+        exit 1
+        ;;
+      *)
+        echo ""
+        info "Model download complete (status: ${status})"
+        return 0
+        ;;
+    esac
+  done
+  echo ""
+  error "Model download timed out after $((max_attempts * delay))s"
+  exit 1
+}
+
 model_ready() {
   local model_id="$1"
   curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/models/${model_id}" | jq -e '
@@ -465,6 +494,9 @@ if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
   register_model_template "$CLI_TOKEN"
   step "Refreshing model template lookup after registration"
   MODEL_TEMPLATE_ID="$(resolve_model_template || true)"
+  if [[ -n "$MODEL_TEMPLATE_ID" ]]; then
+    wait_for_model_download "$MODEL_TEMPLATE_ID"
+  fi
 fi
 
 if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
