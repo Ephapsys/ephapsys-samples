@@ -74,15 +74,25 @@ banner
 
 # ── Parse args ───────────────────────────────────────────────────
 MODE="local"
+RESET_TEMPLATES=false
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --gcp)   MODE="gcp"; shift ;;
     --local) MODE="local"; shift ;;
+    --reset) RESET_TEMPLATES=true; shift ;;
     *)       ARGS+=("$1"); shift ;;
   esac
 done
+
+if $RESET_TEMPLATES; then
+  step "Resetting templates"
+  sed -i '' 's/^MODEL_TEMPLATE_ID=.*/MODEL_TEMPLATE_ID=/' .env 2>/dev/null || sed -i 's/^MODEL_TEMPLATE_ID=.*/MODEL_TEMPLATE_ID=/' .env
+  sed -i '' 's/^AGENT_TEMPLATE_ID=.*/AGENT_TEMPLATE_ID=/' .env 2>/dev/null || sed -i 's/^AGENT_TEMPLATE_ID=.*/AGENT_TEMPLATE_ID=/' .env
+  rm -rf .ephapsys_state 2>/dev/null || true
+  success "Cleared MODEL_TEMPLATE_ID, AGENT_TEMPLATE_ID, and .ephapsys_state"
+fi
 
 info "Mode: ${BOLD}${MODE}${RESET}"
 
