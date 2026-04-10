@@ -185,9 +185,19 @@ resolve_existing_templates() {
 }
 
 # ── Resolve or bootstrap ─────────────────────────────────────────
-step "Checking for existing templates"
-
-if ! resolve_existing_templates; then
+if $FRESH_START; then
+  step "Bootstrapping (fresh start)"
+  info "Registering new model and agent templates."
+  info "This may take a few minutes."
+  printf "\n"
+  export HELLOWORLD_MODEL_NAME
+  export AGENT_TEMPLATE_NAME
+  if [[ "$MODE" == "gcp" ]]; then
+    ./push.sh --mode gcp --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
+  else
+    ./push.sh --mode local --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
+  fi
+elif ! resolve_existing_templates; then
   step "Bootstrapping (first-time setup)"
   info "This registers models, runs modulation, and creates your agent template."
   info "It may take a few minutes on first run."
