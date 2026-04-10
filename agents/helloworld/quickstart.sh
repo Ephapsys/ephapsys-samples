@@ -118,8 +118,8 @@ resolve_existing_templates() {
   if [[ -z "${AGENT_TEMPLATE_ID:-}" ]]; then
     agent_id="$(
       curl -sS "${auth_header[@]}" "${aoc_api}/agents?type=TEMPLATE" | jq -r \
-        --arg label "$agent_label" '
-        map(select((.label // "") == $label))
+        --arg lbl "$agent_label" '
+        map(select((.label // "") == $lbl))
         | first
         | (.id // .public_id // .ID // ._id // empty)'
     )"
