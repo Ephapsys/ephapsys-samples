@@ -424,8 +424,8 @@ run_modulation() {
 }
 
 resolve_agent_template() {
-  curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/agents?type=TEMPLATE" | jq -r --arg label "$AGENT_LABEL" '
-    map(select((.label // "") == $label))
+  curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/agents?type=TEMPLATE" | jq -r --arg lbl "$AGENT_LABEL" '
+    map(select((.label // "") == $lbl))
     | first
     | (.id // .public_id // .ID // ._id // empty)'
 }
