@@ -16,7 +16,7 @@ Workflow:
 import os, sys, time, warnings, logging
 from ephapsys.agent import TrustedAgent
 
-# Suppress HF generation warnings (e.g., pad_token_id notice) for cleaner demo output
+# Suppress HF generation warnings for cleaner demo output
 try:
     from transformers.utils import logging as hf_logging
     hf_logging.set_verbosity_error()
@@ -26,116 +26,113 @@ logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("transformers.generation.utils").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", message="Setting `pad_token_id` to `eos_token_id`.*")
 
+# Colors
+BOLD = "\033[1m"
+DIM = "\033[2m"
+BLUE = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+GOLD = "\033[38;5;220m"
+RESET = "\033[0m"
+
+
+def phase(msg):
+    print(f"\n  {GOLD}>>>{RESET} {BOLD}{msg}{RESET}")
+
+
+def ok(msg):
+    print(f"  {GREEN}+{RESET} {msg}")
+
+
+def info(msg):
+    print(f"  {BLUE}>{RESET} {msg}")
+
+
 def main():
-    # Optional GGUF mode (kept commented for default cleanliness):
-    # If your language artifact is .gguf and you want llama.cpp CLI fallback,
-    # uncomment and set these before creating TrustedAgent.
-    #
-    # if os.getenv("MODEL_RUNTIME", "").lower() == "gguf":
-    #     os.environ.setdefault("AOC_LLAMA_CPP_CLI", "llama-cli")
-    #     os.environ.setdefault("AOC_GGUF_CTX", "2048")
-    #     os.environ.setdefault("AOC_GGUF_MAX_NEW_TOKENS", "256")
-
     agent = TrustedAgent.from_env()
-    # Optional A2A mode (kept commented for default cleanliness):
-    # from ephapsys import A2AClient
-    # a2a = A2AClient.from_env()
-    # peer_agent = os.getenv("A2A_PEER_AGENT_ID", "").strip()
 
-    print("=== Step 1: Verify Agent ===")
+    # ── Phase 1: Verification & Personalization ───────────────────
+    phase("Verifying agent identity")
+    t0 = time.perf_counter()
+
     try:
-        ok, report = agent.verify()
+        verified, report = agent.verify()
     except RuntimeError as e:
         if "404" in str(e):
-            print(f"[HelloWorld] ❌ Agent template '{agent.agent_id}' not found in backend.")
-            print("[HelloWorld] Please create it in the AOC before running this sample.")
+            print(f"  {YELLOW}!{RESET} Agent template '{agent.agent_id}' not found in AOC.")
+            print(f"  {DIM}Create it in the AOC before running this sample.{RESET}")
             sys.exit(1)
         else:
             raise
 
-    # Personalize if needed
-    if not ok:
+    if not verified:
         status = agent.get_status()
         is_personalized = status.get("state", {}).get("personalized", False) or status.get("personalized", False)
         if not is_personalized:
             anchor = os.getenv("PERSONALIZE_ANCHOR", "tpm")
-            print(f"[HelloWorld] Agent not personalized; running personalize(anchor={anchor})...")
+            info(f"Personalizing agent (anchor={anchor})...")
             agent.personalize(anchor=anchor)
-            print(f"[HelloWorld] Instance ID: {agent.agent_id}")
-            # Re-verify with retries to allow backend state to settle
-            for _ in range(5):  # retry up to 5 times
-                ok, report = agent.verify()
-                if ok:
+            info(f"Instance ID: {DIM}{agent.agent_id}{RESET}")
+            for _ in range(5):
+                verified, report = agent.verify()
+                if verified:
                     break
-                print("[HelloWorld] ...waiting for agent to become ready...")
                 time.sleep(1)
 
-        if not ok:
-            print("[HelloWorld] ❌ Agent not ready.")
+        if not verified:
+            print(f"  {YELLOW}!{RESET} Agent not ready after personalization.")
             sys.exit(1)
 
-    print("[HelloWorld] ✅ Agent personalized (instance registered in AOC) and verified.")
+    verify_ms = (time.perf_counter() - t0) * 1000
+    ok(f"Agent verified and personalized {DIM}({verify_ms:.0f}ms){RESET}")
 
-    # === Step 2: Prepare runtime once ===
+    # ── Phase 2: Runtime preparation ─────────────────────────────
+    phase("Preparing runtime")
+    t0 = time.perf_counter()
+
     try:
         rt = agent.prepare_runtime()
-        print(f"[HelloWorld] ✅ Runtime prepared")
-        # Optional GGUF visibility:
-        # lang_rt = (rt or {}).get("language") or {}
-        # if lang_rt.get("gguf_path"):
-        #     print(f"[HelloWorld] GGUF runtime detected: {lang_rt['gguf_path']}")
     except Exception as e:
-        print(f"[HelloWorld] ❌ Runtime preparation failed: {e}")
+        print(f"  {YELLOW}!{RESET} Runtime preparation failed: {e}")
         sys.exit(1)
 
-    print("=== HelloWorld Chatbot ===")
-    print("Type your message and press Enter. Type 'exit' to quit.\n")
+    runtime_ms = (time.perf_counter() - t0) * 1000
+    ok(f"Runtime ready {DIM}({runtime_ms:.0f}ms){RESET}")
 
-    # ---- Interactive Loop ----
+    # ── Phase 3: Interactive chat ─────────────────────────────────
+    phase("HelloWorld Chatbot")
+    print(f"  {DIM}Type your message and press Enter. Type 'exit' to quit.{RESET}\n")
+
+    turn_count = 0
     while True:
         try:
-            ok, report = agent.verify()
-            if not ok:
-                print("[HelloWorld] ❌ Agent verification failed (disabled/revoked). Sleeping...")
+            verified, report = agent.verify()
+            if not verified:
+                print(f"  {YELLOW}!{RESET} Agent disabled or revoked. Waiting...")
                 time.sleep(5)
                 continue
 
-            # Prompt user for input
-            user_input = input("\n👤 [You] > ").strip()
+            user_input = input(f"\n  {BOLD}You >{RESET} ").strip()
             if user_input.lower() in ("exit", "quit"):
-                print("\n👋 [System] Exiting.")
+                print(f"\n  {DIM}Goodbye.{RESET}")
                 break
             if not user_input:
                 continue
 
-            # Send input to agent
+            t0 = time.perf_counter()
             result = agent.run(user_input, model_kind="language")
+            inference_ms = (time.perf_counter() - t0) * 1000
+            turn_count += 1
+
             reply = result.strip() if isinstance(result, str) else str(result)
-
-            print(f"\n🤖 [Agent] > {reply}")
-
-            # Optional A2A send/inbox/ack (uncomment to enable):
-            # if peer_agent:
-            #     corr = f"{os.getenv('A2A_CORRELATION_PREFIX', 'hello')}-{int(time.time())}"
-            #     sent = a2a.send_message(
-            #         from_agent_id=agent.agent_id,
-            #         to_agent_id=peer_agent,
-            #         message_type="event",
-            #         correlation_id=corr,
-            #         payload={"prompt": user_input, "reply": reply},
-            #     )
-            #     print(f"[HelloWorld][A2A] sent message id={sent.get('message', {}).get('id')}")
-            #
-            # inbox = a2a.inbox(agent_id=agent.agent_id, limit=10)
-            # for msg in inbox.get("items", []):
-            #     print(f"[HelloWorld][A2A] inbox message from={msg.get('from_agent_id')} payload={msg.get('payload')}")
-            #     a2a.ack_message(message_id=msg["id"], agent_id=agent.agent_id)
+            print(f"\n  {GREEN}{BOLD}Agent >{RESET} {reply}")
+            print(f"  {DIM}turn {turn_count} | {inference_ms:.0f}ms{RESET}")
 
         except KeyboardInterrupt:
-            print("\n[HelloWorld] Shutting down.")
+            print(f"\n  {DIM}Shutting down.{RESET}")
             sys.exit(0)
         except Exception as e:
-            print(f"\n[HelloWorld] Processing error: {e}")
+            print(f"\n  {YELLOW}!{RESET} Error: {e}")
             time.sleep(2)
 
 if __name__ == "__main__":
