@@ -159,7 +159,7 @@ print_plan() {
   local publish_mode="full modulation"
   local plan_label="${MODEL_NAME:-Starter Model}"
   if [[ "$IDEMPOTENT" -eq 1 ]]; then
-    publish_mode="idempotent in-graph training"
+    publish_mode="idempotent (skip modulation)"
   fi
   printf "\n${GOLD}%s${RESET}\n" "$plan_label"
   printf "  Target AOC:       %s\n" "$AOC_API"
@@ -456,13 +456,14 @@ run_modulation() {
   prepare_modulator_env
   if [[ "$IDEMPOTENT" -eq 1 ]]; then
     trigger_idempotent_publish "$MODEL_TEMPLATE_ID"
-  fi
-  if [[ "$MODE" == "local" ]]; then
-    info "Running language modulation locally..."
-    (cd "$LANG_DIR" && ./modulate_local.sh)
   else
-    info "Running language modulation on GCP (gpu=${GPU})..."
-    (cd "$LANG_DIR" && ./modulate_gcp.sh "$GPU" ${SKIP_BUILD_FLAG:+$SKIP_BUILD_FLAG} ${SKIP_PUSH_FLAG:+$SKIP_PUSH_FLAG})
+    if [[ "$MODE" == "local" ]]; then
+      info "Running language modulation locally..."
+      (cd "$LANG_DIR" && ./modulate_local.sh)
+    else
+      info "Running language modulation on GCP (gpu=${GPU})..."
+      (cd "$LANG_DIR" && ./modulate_gcp.sh "$GPU" ${SKIP_BUILD_FLAG:+$SKIP_BUILD_FLAG} ${SKIP_PUSH_FLAG:+$SKIP_PUSH_FLAG})
+    fi
   fi
   poll_until_ready "$MODEL_TEMPLATE_ID"
 }
@@ -534,7 +535,7 @@ save_env_var MODEL_TEMPLATE_ID "$MODEL_TEMPLATE_ID"
 PHASE_START=$SECONDS
 if [[ "$FORCE_MODULATE" -eq 1 ]] || ! model_ready "$MODEL_TEMPLATE_ID"; then
   if [[ "$IDEMPOTENT" -eq 1 ]]; then
-    step "Publishing model template via idempotent in-graph path"
+    step "Publishing model template (idempotent, skipping modulation)"
   else
     step "Publishing model template via full modulation path"
   fi
