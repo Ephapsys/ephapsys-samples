@@ -93,17 +93,18 @@ def main():
     _bar_width = 35
 
     def _render_progress(downloaded, total):
-        if total <= 0:
-            return
         elapsed = max(0.001, time.perf_counter() - _dl_start[0])
-        pct = min(100, (downloaded * 100) // total)
-        filled = (pct * _bar_width) // 100
         speed = (downloaded / (1024 * 1024)) / elapsed
         dl_mb = downloaded / (1024 * 1024)
-        tot_mb = total / (1024 * 1024)
-        eta = int((total - downloaded) / max(1, downloaded / elapsed)) if downloaded > 0 else 0
-        bar = f"{GREEN}{'=' * filled}{RESET}{DIM}{'.' * (_bar_width - filled)}{RESET}"
-        line = f"\r  [{bar}] {pct:3d}%  {dl_mb:.0f}/{tot_mb:.0f} MB  {DIM}({speed:.1f} MB/s  ETA {eta}s){RESET}  "
+        if total > 0:
+            pct = min(100, (downloaded * 100) // total)
+            filled = (pct * _bar_width) // 100
+            tot_mb = total / (1024 * 1024)
+            eta = int((total - downloaded) / max(1, downloaded / elapsed)) if downloaded > 0 else 0
+            bar = f"{GREEN}{'=' * filled}{RESET}{DIM}{'.' * (_bar_width - filled)}{RESET}"
+            line = f"\r  [{bar}] {pct:3d}%  {dl_mb:.0f}/{tot_mb:.0f} MB  {DIM}({speed:.1f} MB/s  ETA {eta}s){RESET}  "
+        else:
+            line = f"\r  {GOLD}>{RESET} Downloading artifacts... {dl_mb:.0f} MB  {DIM}({speed:.1f} MB/s  {elapsed:.0f}s){RESET}  "
         sys.stdout.write(line)
         sys.stdout.flush()
 
