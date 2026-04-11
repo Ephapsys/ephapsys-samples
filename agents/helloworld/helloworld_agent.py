@@ -88,37 +88,39 @@ def main():
 
     # ── Phase 2: Runtime preparation ─────────────────────────────
     phase("Preparing runtime")
-    t0 = time.perf_counter()
-    _dl_start = [time.perf_counter()]
-    _bar_width = 35
+    import threading as _th
 
-    def _render_progress(downloaded, total):
-        elapsed = max(0.001, time.perf_counter() - _dl_start[0])
-        speed = (downloaded / (1024 * 1024)) / elapsed
-        dl_mb = downloaded / (1024 * 1024)
-        if total > 0:
-            pct = min(100, (downloaded * 100) // total)
-            filled = (pct * _bar_width) // 100
-            tot_mb = total / (1024 * 1024)
-            eta = int((total - downloaded) / max(1, downloaded / elapsed)) if downloaded > 0 else 0
-            bar = f"{GREEN}{'=' * filled}{RESET}{DIM}{'.' * (_bar_width - filled)}{RESET}"
-            line = f"\r  [{bar}] {pct:3d}%  {dl_mb:.0f}/{tot_mb:.0f} MB  {DIM}({speed:.1f} MB/s  ETA {eta}s){RESET}  "
-        else:
-            line = f"\r  {GOLD}>{RESET} Downloading artifacts... {dl_mb:.0f} MB  {DIM}({speed:.1f} MB/s  {elapsed:.0f}s){RESET}  "
-        sys.stdout.write(line)
+    _rt_result = [None]
+    _rt_error = [None]
+    _t0 = time.perf_counter()
+
+    def _run_prepare():
+        try:
+            _rt_result[0] = agent.prepare_runtime()
+        except Exception as e:
+            _rt_error[0] = e
+
+    _worker = _th.Thread(target=_run_prepare, daemon=True)
+    _worker.start()
+
+    # Spinner while preparing
+    _frames = ["   ", ".  ", ".. ", "..."]
+    _i = 0
+    while _worker.is_alive():
+        elapsed = int(time.perf_counter() - _t0)
+        sys.stdout.write(f"\r  {GOLD}>{RESET} Downloading and preparing model{_frames[_i % 4]} {DIM}({elapsed}s){RESET}  ")
         sys.stdout.flush()
+        _worker.join(timeout=0.5)
+        _i += 1
 
-    try:
-        rt = agent.prepare_runtime(progress_cb=_render_progress)
-        if sys.stdout.isatty():
-            sys.stdout.write("\r\033[2K")  # clear progress line
-    except Exception as e:
-        if sys.stdout.isatty():
-            sys.stdout.write("\r\033[2K")
-        print(f"  {YELLOW}!{RESET} Runtime preparation failed: {e}")
+    sys.stdout.write("\r\033[2K")
+    sys.stdout.flush()
+
+    if _rt_error[0]:
+        print(f"  {YELLOW}!{RESET} Runtime preparation failed: {_rt_error[0]}")
         sys.exit(1)
 
-    runtime_s = time.perf_counter() - t0
+    runtime_s = time.perf_counter() - _t0
     ok(f"Runtime ready {DIM}({runtime_s:.0f}s){RESET}")
 
     # ── Phase 3: Interactive chat ─────────────────────────────────
