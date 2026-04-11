@@ -212,9 +212,4 @@ fi
 
 run_preflight
 
-info "Starting HelloWorld Agent..."
-echo "  BASE_URL: $BASE_URL"
-echo "  AGENT_ID: $(current_agent_display_id)"
-echo "  ANCHOR:   $PERSONALIZE_ANCHOR"
-
-python3 helloworld_agent.py
+exec python3 helloworld_agent.py

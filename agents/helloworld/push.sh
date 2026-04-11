@@ -24,6 +24,7 @@ BLUE="\033[36m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
 MAGENTA="\033[35m"
+WHITE="\033[97m"
 GOLD="\033[38;5;220m"
 RESET="\033[0m"
 
@@ -247,9 +248,10 @@ cli_login() {
   warn "No reusable CLI session found for ${AOC_API}; falling back to interactive CLI login." >&2
 
   local cli_user cli_pass login_resp
-  read -r -p "Enter your Ephapsys account email: " cli_user
-  read -r -s -p "Enter your Ephapsys account password: " cli_pass
-  printf '\n'
+  printf "${WHITE}${BOLD}"
+  read -r -p "  Enter your Ephapsys account email: " cli_user
+  read -r -s -p "  Enter your Ephapsys account password: " cli_pass
+  printf "${RESET}\n\n"
   login_resp=$(curl -sS -X POST "$CLI_API/login" \
     -H "Content-Type: application/json" \
     -d "{\"username\":\"${cli_user}\",\"password\":\"${cli_pass}\"}")
@@ -514,6 +516,9 @@ else
   MODEL_TEMPLATE_ID="$(resolve_model_template || true)"
 fi
 print_plan
+PHASE_START=$SECONDS
+
+# ── Phase 1: Registration ────────────────────────────────────────
 step "Resolving existing model template"
 if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
   CLI_TOKEN="$(cli_login)"
@@ -530,9 +535,12 @@ if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
   exit 1
 fi
 
-info "Resolved language model template: ${MODEL_TEMPLATE_ID}"
+REGISTRATION_TIME=$(( SECONDS - PHASE_START ))
+info "Resolved model template: ${DIM}${MODEL_TEMPLATE_ID}${RESET} ${DIM}(${REGISTRATION_TIME}s)${RESET}"
 save_env_var MODEL_TEMPLATE_ID "$MODEL_TEMPLATE_ID"
 
+# ── Phase 2: Modulation ──────────────────────────────────────────
+PHASE_START=$SECONDS
 if [[ "$FORCE_MODULATE" -eq 1 ]] || ! model_ready "$MODEL_TEMPLATE_ID"; then
   if [[ "$IDEMPOTENT" -eq 1 ]]; then
     step "Publishing model template via idempotent in-graph path"
@@ -540,10 +548,14 @@ if [[ "$FORCE_MODULATE" -eq 1 ]] || ! model_ready "$MODEL_TEMPLATE_ID"; then
     step "Publishing model template via full modulation path"
   fi
   run_modulation
+  MODULATION_TIME=$(( SECONDS - PHASE_START ))
+  info "Modulation complete ${DIM}(${MODULATION_TIME}s)${RESET}"
 else
   info "Model template already modulated and ready; skipping modulation."
 fi
 
+# ── Phase 3: Agent template ───────────────────────────────────────
+PHASE_START=$SECONDS
 step "Resolving existing agent template"
 AGENT_TEMPLATE_ID="$(resolve_agent_template || true)"
 if [[ -z "$AGENT_TEMPLATE_ID" ]]; then
@@ -559,15 +571,13 @@ if [[ -z "$AGENT_TEMPLATE_ID" ]]; then
   exit 1
 fi
 
+AGENT_TEMPLATE_TIME=$(( SECONDS - PHASE_START ))
 save_env_var AGENT_TEMPLATE_ID "$AGENT_TEMPLATE_ID"
 
-cat <<EOF
-
-[SUCCESS] HelloWorld bootstrap complete.
-  MODE:              ${MODE}
-  MODEL_TEMPLATE_ID: ${MODEL_TEMPLATE_ID}
-  AGENT_TEMPLATE_ID: ${AGENT_TEMPLATE_ID}
-
-Next:
-  ./run.sh --local         # runs preflight automatically, then starts the HelloWorld agent locally
-EOF
+printf "\n"
+printf "  ${GREEN}${BOLD}Bootstrap complete${RESET}\n"
+printf "  ${DIM}────────────────────────────────────────${RESET}\n"
+printf "  Model template   ${BOLD}${MODEL_TEMPLATE_ID}${RESET}\n"
+printf "  Agent template   ${BOLD}${AGENT_TEMPLATE_ID}${RESET}\n"
+printf "  ${DIM}Registration: ${REGISTRATION_TIME}s | Modulation: ${MODULATION_TIME:-0}s | Agent: ${AGENT_TEMPLATE_TIME}s${RESET}\n"
+printf "\n"
