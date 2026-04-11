@@ -89,15 +89,36 @@ def main():
     # ── Phase 2: Runtime preparation ─────────────────────────────
     phase("Preparing runtime")
     t0 = time.perf_counter()
+    _dl_start = [time.perf_counter()]
+    _bar_width = 35
+
+    def _render_progress(downloaded, total):
+        if total <= 0:
+            return
+        elapsed = max(0.001, time.perf_counter() - _dl_start[0])
+        pct = min(100, (downloaded * 100) // total)
+        filled = (pct * _bar_width) // 100
+        speed = (downloaded / (1024 * 1024)) / elapsed
+        dl_mb = downloaded / (1024 * 1024)
+        tot_mb = total / (1024 * 1024)
+        eta = int((total - downloaded) / max(1, downloaded / elapsed)) if downloaded > 0 else 0
+        bar = f"{GREEN}{'=' * filled}{RESET}{DIM}{'.' * (_bar_width - filled)}{RESET}"
+        line = f"\r  [{bar}] {pct:3d}%  {dl_mb:.0f}/{tot_mb:.0f} MB  {DIM}({speed:.1f} MB/s  ETA {eta}s){RESET}  "
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
     try:
-        rt = agent.prepare_runtime()
+        rt = agent.prepare_runtime(progress_cb=_render_progress)
+        if sys.stdout.isatty():
+            sys.stdout.write("\r\033[2K")  # clear progress line
     except Exception as e:
+        if sys.stdout.isatty():
+            sys.stdout.write("\r\033[2K")
         print(f"  {YELLOW}!{RESET} Runtime preparation failed: {e}")
         sys.exit(1)
 
-    runtime_ms = (time.perf_counter() - t0) * 1000
-    ok(f"Runtime ready {DIM}({runtime_ms:.0f}ms){RESET}")
+    runtime_s = time.perf_counter() - t0
+    ok(f"Runtime ready {DIM}({runtime_s:.0f}s){RESET}")
 
     # ── Phase 3: Interactive chat ─────────────────────────────────
     phase("HelloWorld Chatbot")
