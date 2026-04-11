@@ -248,10 +248,11 @@ cli_login() {
   warn "No reusable CLI session found for ${AOC_API}; falling back to interactive CLI login." >&2
 
   local cli_user cli_pass login_resp
-  printf "${WHITE}${BOLD}"
-  read -r -p "  Enter your Ephapsys account email: " cli_user
-  read -r -s -p "  Enter your Ephapsys account password: " cli_pass
-  printf "${RESET}\n\n"
+  printf "  ${WHITE}${BOLD}Enter your Ephapsys account email:${RESET} "
+  read -r cli_user
+  printf "  ${WHITE}${BOLD}Enter your Ephapsys account password:${RESET} "
+  read -r -s cli_pass
+  printf "\n\n"
   login_resp=$(curl -sS -X POST "$CLI_API/login" \
     -H "Content-Type: application/json" \
     -d "{\"username\":\"${cli_user}\",\"password\":\"${cli_pass}\"}")
