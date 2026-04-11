@@ -39,13 +39,50 @@ import os, sys, json, datetime, argparse, time
 import math
 from ephapsys.modulation import ModulatorClient
 
+BOLD = "\033[1m"
+DIM = "\033[2m"
+BLUE = "\033[36m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
+GOLD = "\033[38;5;220m"
 RESET = "\033[0m"
+
+import threading
+
+def _spinner(msg, stop_event):
+    """Background spinner for long-running operations."""
+    frames = ["   ", ".  ", ".. ", "..."]
+    i = 0
+    t0 = time.time()
+    while not stop_event.is_set():
+        elapsed = int(time.time() - t0)
+        sys.stdout.write(f"\r  {GOLD}>{RESET} {msg}{frames[i % len(frames)]} {DIM}({elapsed}s){RESET}  ")
+        sys.stdout.flush()
+        stop_event.wait(0.4)
+        i += 1
+    elapsed = int(time.time() - t0)
+    sys.stdout.write(f"\r  {GREEN}+{RESET} {msg} {DIM}({elapsed}s){RESET}                    \n")
+    sys.stdout.flush()
+
+def with_spinner(msg, fn, *args, **kwargs):
+    """Run fn with a spinner, return its result."""
+    stop = threading.Event()
+    t = threading.Thread(target=_spinner, args=(msg, stop), daemon=True)
+    t.start()
+    try:
+        result = fn(*args, **kwargs)
+    finally:
+        stop.set()
+        t.join()
+    return result
+
+def phase(msg):
+    print(f"\n  {GOLD}>>>{RESET} {BOLD}{msg}{RESET}")
 
 def evaluate_baseline(mc, model, tokenizer, model_template_id, ds_name, ds_config, ds_split, steps):
     """Run a baseline (unmodulated) evaluation for comparison."""
-    print(f"{YELLOW}[BASELINE] Running standard evaluation (no ECM injected)...{RESET}")
+    phase("Baseline evaluation (no ECM)")
+    print(f"  {YELLOW}>{RESET} Running standard evaluation...")
     baseline_stream = []
 
     # === Use full compute_language_metrics_stream (includes ROUGE/BLEU/BERTScore) ===
@@ -235,24 +272,29 @@ def main():
     recipe = tpl.get("DesiredModulation") or {}
 
     # --- Download model snapshot into run_dir ---
-    local_model_dir = mc.download_and_extract_model(args.model_template_id, run_dir)
+    phase("Downloading model snapshot")
+    local_model_dir = with_spinner("Downloading model from AOC",
+        mc.download_and_extract_model, args.model_template_id, run_dir)
 
     # --- Load model (Seq2Seq or Causal) from local snapshot ---
+    phase("Loading model")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_id = recipe.get("SourceRepo") 
+    model_id = recipe.get("SourceRepo")
 
     config = AutoConfig.from_pretrained(local_model_dir, local_files_only=True)
     tokenizer = AutoTokenizer.from_pretrained(local_model_dir, local_files_only=True)
 
     # Detect model type
     if config.model_type in ["t5", "bart", "mbart", "pegasus", "mt5"]:
-        print(f"[INFO] Detected Seq2Seq model: {config.model_type}")
-        model = AutoModelForSeq2SeqLM.from_pretrained(local_model_dir, local_files_only=True).to(device)
+        print(f"  {BLUE}>{RESET} Detected Seq2Seq model: {BOLD}{config.model_type}{RESET}")
+        model = with_spinner("Loading model weights",
+            lambda: AutoModelForSeq2SeqLM.from_pretrained(local_model_dir, local_files_only=True).to(device))
         encoder = model.get_encoder()
         is_seq2seq = True
     else:
-        print(f"[INFO] Detected Causal LM model: {config.model_type}")
-        model = AutoModelForCausalLM.from_pretrained(local_model_dir, local_files_only=True).to(device)
+        print(f"  {BLUE}>{RESET} Detected Causal LM: {BOLD}{config.model_type}{RESET}")
+        model = with_spinner("Loading model weights",
+            lambda: AutoModelForCausalLM.from_pretrained(local_model_dir, local_files_only=True).to(device))
         encoder = model  # causal LMs have no separate encoder
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = model.config.eos_token_id
@@ -272,14 +314,10 @@ def main():
     if not variant:
         raise ValueError("Trainer requires 'variant' in recipe (additive or multiplicative).")
 
-    print("=== JOB CONFIG FROM BACKEND ===")
-    print(f"Job ID:      {job_id}")
-    print(f"Mode:        {mode}")
-    print(f"Variant:     {variant}")
-    print(f"Steps:       {steps}")
-    print(f"Dataset:     {ds_name}/{ds_config}/{ds_split}")
-    print(f"Run Dir:     {run_dir}")
-    print("================================")
+    phase("Modulation job")
+    print(f"  {DIM}Job ID:    {job_id}{RESET}")
+    print(f"  {DIM}Mode:      {mode} | Variant: {variant} | Steps: {steps}{RESET}")
+    print(f"  {DIM}Dataset:   {ds_name}/{ds_config}/{ds_split}{RESET}")
 
     # --- Initialize baseline placeholders to avoid UnboundLocalError ---
     baseline_metrics, baseline_stream = {}, []
@@ -311,7 +349,7 @@ def main():
     # MANUAL MODE
     # =========================
     if mode == "manual":
-        print("[INFO] Running in manual mode")
+        phase("Ephaptic modulation (manual mode)")
 
         # Inject ECM once with config from recipe
         trial_cfg = {
@@ -500,7 +538,8 @@ def main():
     # AUTO MODE
     # =========================
     else:
-        print("[INFO] Running in auto mode")
+        phase("Ephaptic modulation (auto mode)")
+        print(f"  {BLUE}>{RESET} Running Bayesian search over EC-ANN configurations")
         best_score, best_metrics, best_variant, best_stream = None, None, None, None
         last_cfg, last_score = None, None
         trial_num = 0
@@ -730,7 +769,8 @@ def main():
             summary["best_metrics"] = best_metrics
             summary["timesteps"] = steps
             print(f"[INFO] Reports saved under: {run_dir}")
-            print(f"{GREEN}[DONE] Best trial finalized with score={best_score:.3f}, metrics={best_metrics}{RESET}")
+            phase("Modulation complete")
+        print(f"  {GREEN}+{RESET} Best trial: score={BOLD}{best_score:.3f}{RESET} acc={best_metrics.get('accuracy', 0):.4f} loss={best_metrics.get('loss', 0):.4f} ppl={best_metrics.get('perplexity', 0):.1f}")
         else:
             print("[WARN] No valid trials executed in auto mode.")
 

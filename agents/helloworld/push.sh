@@ -29,15 +29,15 @@ GOLD="\033[38;5;220m"
 RESET="\033[0m"
 
 info() {
-  printf "${BLUE}[INFO]${RESET} %s\n" "$*"
+  printf "${BLUE}[INFO]${RESET} %b\n" "$*"
 }
 
 warn() {
-  printf "${YELLOW}[WARN]${RESET} %s\n" "$*" >&2
+  printf "${YELLOW}[WARN]${RESET} %b\n" "$*" >&2
 }
 
 error() {
-  printf "${MAGENTA}[ERROR]${RESET} %s\n" "$*" >&2
+  printf "${MAGENTA}[ERROR]${RESET} %b\n" "$*" >&2
 }
 
 require_cmd() {
