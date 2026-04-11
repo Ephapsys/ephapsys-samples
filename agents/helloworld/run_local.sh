@@ -59,17 +59,18 @@ ensure_runtime_env() {
     return
   fi
 
-  if python3 -c "import ephapsys" >/dev/null 2>&1; then
-    info "Ephapsys SDK already installed, skipping install"
-    return
-  fi
-
+  # Always use a dedicated venv to avoid version conflicts with system packages
   if [ ! -d "$venv" ]; then
     info "Creating virtualenv at $venv"
     python3 -m venv "$venv"
   fi
   # shellcheck disable=SC1091
   source "$venv/bin/activate"
+
+  if python3 -c "import ephapsys" >/dev/null 2>&1 && [ "$sdk_source" != "testpypi" ]; then
+    info "Ephapsys SDK already installed, skipping install"
+    return
+  fi
 
   local pip_args="--quiet"
   local pkg="ephapsys[${sdk_extras}]"
