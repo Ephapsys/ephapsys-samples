@@ -113,13 +113,7 @@ fi
 ensure_runtime_env
 ensure_python_deps
 
-info "Starting Ephaptic Language Trainer..."
-echo "  BASE_URL:          $BASE_URL"
-echo "  AOC_ORG_ID:        $AOC_ORG_ID"
-echo "  AOC_MODULATION_TOKEN:           ${AOC_MODULATION_TOKEN:0:8}********"
-echo "  MODEL_TEMPLATE_ID: $MODEL_TEMPLATE_ID"
-echo "  OUTDIR:            $OUTDIR"
-echo "  TRAIN_MODE:        $TRAIN_MODE (1=train enabled, 0=evaluation only)"
+info "Starting Ephaptic Language Trainer (model=${MODEL_TEMPLATE_ID})"
 
 # --- Build Python command dynamically ---
 CMD=(
@@ -131,14 +125,10 @@ CMD=(
 )
 
 if [ "$TRAIN_MODE" = "1" ]; then
-  info "Training flag active (gradient updates ON)"
-  CMD+=(--train)   # ✅ new unified flag (backward-compatible internally)
+  CMD+=(--train)
 else
   info "Evaluation-only mode (baseline + ephaptic comparison)"
 fi
 
 # --- Execute trainer ---
-"${CMD[@]}"
-
-info "Trainer finished successfully."
-info "Artifacts stored in: $OUTDIR"
+exec "${CMD[@]}"

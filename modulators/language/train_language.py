@@ -180,7 +180,10 @@ def main():
     parser.add_argument("--train_mode", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--auto_start", type=int, default=int(os.getenv("AUTO_START", "1")),
         help="1=auto-call /modulation/start (default), 0=manual mode (UI must start job)")
+    parser.add_argument("--verbose", action="store_true", default=os.getenv("TRAINER_VERBOSE", "0") == "1",
+        help="Show debug output")
     args = parser.parse_args()
+    VERBOSE = args.verbose
     # Merge old flag into the new one
     args.train = bool(args.train or args.train_mode)
 
@@ -196,30 +199,43 @@ def main():
 
     # --- Setup client ---
     mc = ModulatorClient(args.base_url, args.api_key)
+    _active_job_id = [None]  # mutable for cleanup handler
+
+    def _cleanup_on_exit(signum=None, frame=None):
+        job = _active_job_id[0]
+        if job:
+            print(f"\n  {YELLOW}>{RESET} Stopping modulation job {DIM}({job}){RESET}")
+            try:
+                mc.stop_job(job_id=job, model_template_id=args.model_template_id)
+                print(f"  {GREEN}+{RESET} Job stopped cleanly")
+            except Exception:
+                pass
+        sys.exit(1)
+
+    import signal
+    signal.signal(signal.SIGINT, _cleanup_on_exit)
+    signal.signal(signal.SIGTERM, _cleanup_on_exit)
 
     if args.auto_start:
-        print("[INFO] Auto-starting modulation job with full config...")
 
         # --- Check for existing running job ---
         tpl_existing = mc.get_template_or_die(args.model_template_id)
         mod = tpl_existing.get("Modulation") or {}
 
-        print(f"[DEBUG] ---> Current Modulation state: {json.dumps(mod, indent=2)}")
+        if VERBOSE:
+            print(f"  {DIM}[verbose] Modulation state: {json.dumps(mod, indent=2)}{RESET}")
 
         if mod.get("status") == "running":
             old_job = mod.get("job_id")
-            print(f"[WARN] Previous job still running (job_id={old_job}). Stopping it first...")
+            print(f"  {YELLOW}>{RESET} Stopping previous job {DIM}({old_job}){RESET}")
             try:
                 mc.stop_job(job_id=old_job, model_template_id=args.model_template_id)
-                print("---> 1  [INFO] Stopped previous job successfully. ")
-
                 tpl_existing = mc.get_template_or_die(args.model_template_id)
-                print("---> 2 [INFO] Stopped previous job successfully.")
                 mod = tpl_existing.get("Modulation")
-
-                print(f"[DEBUG] ---> New Modulation state after stopping: {json.dumps(mod, indent=2)}")
+                if VERBOSE:
+                    print(f"  {DIM}[verbose] State after stop: {json.dumps(mod, indent=2)}{RESET}")
             except Exception as e:
-                print(f"[WARN] Failed to stop old job cleanly: {e}")
+                print(f"  {YELLOW}!{RESET} Failed to stop old job: {e}")
                 exit(1)
 
         # --- Define dataset, KPIs, search config ---
@@ -269,6 +285,7 @@ def main():
 
     # --- Block until job_id is available ---
     tpl, job_id = mc.wait_for_job_id(args.model_template_id)
+    _active_job_id[0] = job_id
     recipe = tpl.get("DesiredModulation") or {}
 
     # --- Download model snapshot into run_dir ---
@@ -734,7 +751,8 @@ def main():
                 best_variant["maxSteps"] = best_variant.get("maxSteps", steps)
                 best_variant.pop("timesteps", None)
             else:
-                print("[DEBUG] best_variant is None at summary stage — skipping patch")
+                if VERBOSE:
+                    print(f"  {DIM}[verbose] best_variant is None at summary stage — skipping patch{RESET}")
 
 
             # --- Preserve language-quality metrics from last stream (no extra eval) ---
