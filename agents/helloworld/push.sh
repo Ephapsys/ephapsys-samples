@@ -332,7 +332,7 @@ wait_for_model_download() {
       DOWNLOADING)
         elapsed=$((i * delay))
         if [[ -t 1 ]]; then
-          printf "\r  ${GOLD}>${RESET} Downloading model on server${frames[$((i % 4))]} ${DIM}(%ds)${RESET}  " "$elapsed"
+          printf "\r  ${GOLD}>${RESET} AOC is downloading model from provider${frames[$((i % 4))]} ${DIM}(%ds)${RESET}  " "$elapsed"
         fi
         sleep "$delay"
         ;;
@@ -344,7 +344,7 @@ wait_for_model_download() {
       *)
         elapsed=$((i * delay))
         [[ -t 1 ]] && printf "\r\033[2K"
-        printf "  ${GREEN}+${RESET} Model downloaded ${DIM}(%ds)${RESET}\n" "$elapsed"
+        printf "  ${GREEN}+${RESET} Model secured in AOC ${DIM}(%ds)${RESET}\n" "$elapsed"
         return 0
         ;;
     esac
