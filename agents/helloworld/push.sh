@@ -324,21 +324,15 @@ wait_for_model_download() {
   local model_id="$1"
   local max_attempts="${2:-120}"
   local delay="${3:-5}"
-  local status elapsed bar_width=30 filled pct
-  local spinner=('  ' ' .' '...' '. ' '  ')
+  local status elapsed
+  local frames=("   " ".  " ".. " "...")
   for ((i=1; i<=max_attempts; i++)); do
     status=$(curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/models/${model_id}" | jq -r '.status // empty' 2>/dev/null || true)
     case "$status" in
       DOWNLOADING)
         elapsed=$((i * delay))
-        pct=$(( (elapsed * 100) / (max_attempts * delay) ))
-        filled=$(( (pct * bar_width) / 100 ))
         if [[ -t 1 ]]; then
-          printf "\r  ${GOLD}[DOWNLOADING]${RESET} ["
-          for ((b=0; b<bar_width; b++)); do
-            if ((b < filled)); then printf "${GREEN}=${RESET}"; else printf "${BLUE}.${RESET}"; fi
-          done
-          printf "] %3d%% ${DIM}(%ds)${RESET}" "$pct" "$elapsed"
+          printf "\r  ${GOLD}>${RESET} Downloading model on server${frames[$((i % 4))]} ${DIM}(%ds)${RESET}  " "$elapsed"
         fi
         sleep "$delay"
         ;;
@@ -348,13 +342,9 @@ wait_for_model_download() {
         exit 1
         ;;
       *)
-        if [[ -t 1 ]]; then
-          printf "\r\033[2K"
-          printf "  ${GREEN}[DOWNLOADED]${RESET}  ["
-          for ((b=0; b<bar_width; b++)); do printf "${GREEN}=${RESET}"; done
-          printf "] ${GREEN}100%%${RESET}\n"
-        fi
-        info "Model ready (status: ${status})"
+        elapsed=$((i * delay))
+        [[ -t 1 ]] && printf "\r\033[2K"
+        printf "  ${GREEN}+${RESET} Model downloaded ${DIM}(%ds)${RESET}\n" "$elapsed"
         return 0
         ;;
     esac
