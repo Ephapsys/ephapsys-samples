@@ -786,9 +786,8 @@ def main():
             summary["best_score"] = best_score
             summary["best_metrics"] = best_metrics
             summary["timesteps"] = steps
-            print(f"[INFO] Reports saved under: {run_dir}")
             phase("Modulation complete")
-        print(f"  {GREEN}+{RESET} Best trial: score={BOLD}{best_score:.3f}{RESET} acc={best_metrics.get('accuracy', 0):.4f} loss={best_metrics.get('loss', 0):.4f} ppl={best_metrics.get('perplexity', 0):.1f}")
+            print(f"  {GREEN}+{RESET} Best trial: score={BOLD}{best_score:.3f}{RESET} acc={best_metrics.get('accuracy', 0):.4f} loss={best_metrics.get('loss', 0):.4f} ppl={best_metrics.get('perplexity', 0):.1f}")
         else:
             print("[WARN] No valid trials executed in auto mode.")
 
