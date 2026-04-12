@@ -55,9 +55,9 @@ done_msg() {
   printf "${GREEN}"
   printf "    ╔═══════════════════════════════════════════════════╗\n"
   printf "    ║                                                   ║\n"
-  printf "    ║   ${WHITE}${BOLD}  Your AI agent is live. Happy building!  ${RESET}${GREEN}    ║\n"
+  printf "    ║   ${WHITE}${BOLD}  Your AI agent is live.                  ${RESET}${GREEN}    ║\n"
   printf "    ║                                                   ║\n"
-  printf "    ║   ${RESET}${DIM}Total setup time: ${total_s}s${RESET}${GREEN}                          ║\n"
+  printf "    ║   ${RESET}${DIM}Setup completed in ${total_s}s${RESET}${GREEN}                         ║\n"
   printf "    ║   ${RESET}${DIM}Type 'exit' to quit the chatbot${RESET}${GREEN}                  ║\n"
   printf "    ║                                                   ║\n"
   printf "    ╚═══════════════════════════════════════════════════╝\n"
@@ -234,11 +234,11 @@ fi
 step "2" "Launching agent"
 separator
 
+TOTAL_TIME=$(( SECONDS - GLOBAL_START ))
+done_msg "$TOTAL_TIME"
+
 if [[ "$MODE" == "gcp" ]]; then
   ./run.sh --gcp
 else
   ./run.sh --local
 fi
-
-TOTAL_TIME=$(( SECONDS - GLOBAL_START ))
-done_msg "$TOTAL_TIME"
