@@ -88,14 +88,33 @@ def main():
 
     # ── Phase 2: Runtime preparation ─────────────────────────────
     phase("Preparing runtime")
+
+    # Show expected download size upfront
+    try:
+        manifest = agent._fetch_manifest()
+        total_size = 0
+        for m in (manifest or {}).get("models", []):
+            for art_meta in (m.get("artifact_urls") or {}).values():
+                if isinstance(art_meta, dict):
+                    total_size += int(art_meta.get("size") or 0)
+        if total_size > 0:
+            info(f"Downloading {total_size / (1024*1024):.0f} MB of model artifacts")
+        else:
+            info("Downloading model artifacts")
+    except Exception:
+        info("Downloading model artifacts")
+
     _t0 = time.perf_counter()
     _bar_width = 35
     _last_render = [0]
+    _started_download = [False]
 
     def _render_progress(downloaded, total):
         now = time.perf_counter()
-        if now - _last_render[0] < 0.3 and downloaded < total:
-            return  # throttle updates
+        if not _started_download[0]:
+            _started_download[0] = True
+        if now - _last_render[0] < 0.3 and (total <= 0 or downloaded < total):
+            return
         _last_render[0] = now
         elapsed = max(0.001, now - _t0)
         speed = (downloaded / (1024 * 1024)) / elapsed
@@ -108,7 +127,15 @@ def main():
             bar = f"{GREEN}{'=' * filled}{RESET}{DIM}{'.' * (_bar_width - filled)}{RESET}"
             line = f"\r  [{bar}] {pct:3d}%  {dl_mb:.0f}/{tot_mb:.0f} MB  {DIM}({speed:.1f} MB/s  ETA {eta}s){RESET}    "
         else:
-            line = f"\r  {GOLD}>{RESET} Downloading model artifacts... {dl_mb:.0f} MB  {DIM}({speed:.1f} MB/s  {elapsed:.0f}s){RESET}    "
+            # Bouncing bar when total unknown
+            bounce_pos = int(elapsed * 3) % (_bar_width * 2)
+            if bounce_pos >= _bar_width:
+                bounce_pos = _bar_width * 2 - bounce_pos
+            bar_chars = ['.'] * _bar_width
+            for b in range(max(0, bounce_pos), min(_bar_width, bounce_pos + 5)):
+                bar_chars[b] = '='
+            bar = f"{GREEN}{''.join(bar_chars)}{RESET}"
+            line = f"\r  [{bar}]  {dl_mb:.0f} MB  {DIM}({speed:.1f} MB/s  {elapsed:.0f}s){RESET}    "
         sys.stdout.write(line)
         sys.stdout.flush()
 
