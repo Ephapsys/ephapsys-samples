@@ -181,7 +181,6 @@ fi
 
 # Load .env if available
 if [ -f ".env" ]; then
-  info "Loading environment from .env"
   # shellcheck disable=SC1091
   set -a && source .env && set +a
 fi
@@ -204,13 +203,13 @@ if [ -z "$ORG_ID" ] || [ -z "$BOOTSTRAP_TOKEN" ]; then
   exit 1
 fi
 
-ensure_runtime_env
+ensure_runtime_env 2>&1 | grep -i "error\|failed" >&2 || true
 
 if [ "$MODE" = "check" ]; then
   run_preflight
   exit 0
 fi
 
-run_preflight
+run_preflight 2>&1 | grep -i "FAIL\|error\|ACTION" >&2 || true
 
 exec python3 helloworld_agent.py
