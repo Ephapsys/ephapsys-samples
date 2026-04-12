@@ -217,7 +217,18 @@ def main():
     print()
 
     # ── Phase 3: Interactive chat ─────────────────────────────────
-    print(f"  {BOLD}HelloWorld Chatbot{RESET}")
+    # Clear terminal for a fresh chatbot experience
+    os.system("clear" if os.name != "nt" else "cls")
+
+    print()
+    print(f"    {GOLD}╭───────────────────────────────────────────╮{RESET}")
+    print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
+    print(f"    {GOLD}│{RESET}   {GOLD}{BOLD}⚡ HelloWorld Agent ⚡{RESET}                  {GOLD}│{RESET}")
+    print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
+    print(f"    {GOLD}│{RESET}   {DIM}Powered by ephaptic coupling{RESET}            {GOLD}│{RESET}")
+    print(f"    {GOLD}│{RESET}   {DIM}Type 'exit' to quit{RESET}                     {GOLD}│{RESET}")
+    print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
+    print(f"    {GOLD}╰───────────────────────────────────────────╯{RESET}")
     print()
 
     turn_count = 0
