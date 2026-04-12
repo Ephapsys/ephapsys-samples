@@ -229,7 +229,7 @@ def main():
     print(f"    {GOLD}│{' ' * CW}│{RESET}")
     print(_cline(f"{GOLD}{BOLD}⚡ HelloWorld Agent ⚡{RESET}", 22))
     print(f"    {GOLD}│{' ' * CW}│{RESET}")
-    print(_cline(f"{DIM}Powered by Ephapsys", 19))
+    print(_cline(f"{DIM}Powered by Ephapsys SDK", 22))
     print(_cline(f"{DIM}Type 'exit' to quit", 19))
     print(f"    {GOLD}│{' ' * CW}│{RESET}")
     print(f"    {GOLD}╰{'─' * CW}╯{RESET}")
