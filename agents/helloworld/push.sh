@@ -162,8 +162,6 @@ print_plan() {
     publish_mode="idempotent (skip modulation)"
   fi
   printf "\n${GOLD}%s${RESET}\n" "$plan_label"
-  printf "  Target AOC:       %s\n" "$AOC_API"
-  printf "  Runtime mode:     %s\n" "$MODE"
   printf "  Model repo:       %s\n" "$MODEL_REPO"
   printf "  Model size:       %s\n" "$(model_size_label)"
   printf "  Publish mode:     %s\n" "$publish_mode"
