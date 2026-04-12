@@ -203,13 +203,14 @@ if [ -z "$ORG_ID" ] || [ -z "$BOOTSTRAP_TOKEN" ]; then
   exit 1
 fi
 
-ensure_runtime_env 2>&1 | grep -i "error\|failed" >&2 || true
+# Run in current shell (not piped) so venv activation persists
+ensure_runtime_env > /dev/null
 
 if [ "$MODE" = "check" ]; then
   run_preflight
   exit 0
 fi
 
-run_preflight 2>&1 | grep -i "FAIL\|error\|ACTION" >&2 || true
+run_preflight > /dev/null
 
 exec python3 helloworld_agent.py
