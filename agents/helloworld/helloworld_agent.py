@@ -179,13 +179,11 @@ def main():
         sys.stdout.flush()
 
     try:
-        try:
-            rt = agent.prepare_runtime(progress_cb=_render_progress)
-        except TypeError:
-            # Fallback for SDK versions without progress_cb
-            rt = agent.prepare_runtime()
+        rt = agent.prepare_runtime(progress_cb=_render_progress)
     except Exception as e:
         sys.stdout.write("\r\033[2K")
+        import traceback
+        traceback.print_exc()
         print(f"  {YELLOW}!{RESET} Runtime preparation failed: {e}")
         sys.exit(1)
 
