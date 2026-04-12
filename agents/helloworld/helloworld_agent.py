@@ -220,15 +220,19 @@ def main():
     # Clear terminal for a fresh chatbot experience
     os.system("clear" if os.name != "nt" else "cls")
 
+    CW = 43  # chat box inner width
+    def _cline(text, visible_len, pad=3):
+        return f"    {GOLD}│{RESET}{' ' * pad}{text}{RESET}{' ' * (CW - visible_len - pad)}{GOLD}│{RESET}"
+
     print()
-    print(f"    {GOLD}╭───────────────────────────────────────────╮{RESET}")
-    print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
-    print(f"    {GOLD}│{RESET}   {GOLD}{BOLD}⚡ HelloWorld Agent ⚡{RESET}                  {GOLD}│{RESET}")
-    print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
-    print(f"    {GOLD}│{RESET}   {DIM}Powered by Ephapsys{RESET}                    {GOLD}│{RESET}")
-    print(f"    {GOLD}│{RESET}   {DIM}Type 'exit' to quit{RESET}                     {GOLD}│{RESET}")
-    print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
-    print(f"    {GOLD}╰───────────────────────────────────────────╯{RESET}")
+    print(f"    {GOLD}╭{'─' * CW}╮{RESET}")
+    print(f"    {GOLD}│{' ' * CW}│{RESET}")
+    print(_cline(f"{GOLD}{BOLD}⚡ HelloWorld Agent ⚡{RESET}", 22))
+    print(f"    {GOLD}│{' ' * CW}│{RESET}")
+    print(_cline(f"{DIM}Powered by Ephapsys", 19))
+    print(_cline(f"{DIM}Type 'exit' to quit", 19))
+    print(f"    {GOLD}│{' ' * CW}│{RESET}")
+    print(f"    {GOLD}╰{'─' * CW}╯{RESET}")
     print()
 
     turn_count = 0
