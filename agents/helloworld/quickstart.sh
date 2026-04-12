@@ -49,20 +49,7 @@ separator() {
   printf "  ${DIM}%s${RESET}\n" "────────────────────────────────────────────────"
 }
 
-done_msg() {
-  local total_s="$1"
-  printf "\n"
-  printf "${GREEN}"
-  printf "    ╔═══════════════════════════════════════════════════╗\n"
-  printf "    ║                                                   ║\n"
-  printf "    ║   ${WHITE}${BOLD}  Your AI agent is live.                  ${RESET}${GREEN}    ║\n"
-  printf "    ║                                                   ║\n"
-  printf "    ║   ${RESET}${DIM}Setup completed in ${total_s}s${RESET}${GREEN}                         ║\n"
-  printf "    ║   ${RESET}${DIM}Type 'exit' to quit the chatbot${RESET}${GREEN}                  ║\n"
-  printf "    ║                                                   ║\n"
-  printf "    ╚═══════════════════════════════════════════════════╝\n"
-  printf "${RESET}\n"
-}
+
 
 # ── First-run .env setup ────────────────────────────────────────
 if [[ ! -f ".env" && -f ".env.example" ]]; then
@@ -233,9 +220,6 @@ fi
 # ── Step 2: Launch ──────────────────────────────────────────────
 step "2" "Launching agent"
 separator
-
-TOTAL_TIME=$(( SECONDS - GLOBAL_START ))
-done_msg "$TOTAL_TIME"
 
 if [[ "$MODE" == "gcp" ]]; then
   ./run.sh --gcp

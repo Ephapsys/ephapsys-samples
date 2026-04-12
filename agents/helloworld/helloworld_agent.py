@@ -65,6 +65,7 @@ def info(msg):
 
 
 def main():
+    t0_global = time.perf_counter()
     agent = TrustedAgent.from_env()
 
     # ── Phase 1: Verification & Personalization ───────────────────
@@ -195,9 +196,29 @@ def main():
     runtime_s = time.perf_counter() - _t0
     ok(f"Runtime ready {DIM}({runtime_s:.0f}s){RESET}")
 
+    # ── Ready banner ────────────────────────────────────────────────
+    total_s = int(time.perf_counter() - t0_global)
+    W = 51  # inner width of the box
+    def _pad(text, visible_len):
+        return text + " " * (W - visible_len)
+
+    print()
+    print(f"{GREEN}    ╔{'═' * W}╗{RESET}")
+    print(f"{GREEN}    ║{' ' * W}║{RESET}")
+    line1 = "Your AI agent is live."
+    print(f"{GREEN}    ║{RESET}   {BOLD}{line1}{RESET}{' ' * (W - len(line1) - 3)}{GREEN}║{RESET}")
+    print(f"{GREEN}    ║{' ' * W}║{RESET}")
+    line2 = f"Setup completed in {total_s}s"
+    print(f"{GREEN}    ║{RESET}   {DIM}{line2}{RESET}{' ' * (W - len(line2) - 3)}{GREEN}║{RESET}")
+    line3 = "Type 'exit' to quit the chatbot"
+    print(f"{GREEN}    ║{RESET}   {DIM}{line3}{RESET}{' ' * (W - len(line3) - 3)}{GREEN}║{RESET}")
+    print(f"{GREEN}    ║{' ' * W}║{RESET}")
+    print(f"{GREEN}    ╚{'═' * W}╝{RESET}")
+    print()
+
     # ── Phase 3: Interactive chat ─────────────────────────────────
-    phase("HelloWorld Chatbot")
-    print(f"  {DIM}Type your message and press Enter. Type 'exit' to quit.{RESET}\n")
+    print(f"  {BOLD}HelloWorld Chatbot{RESET}")
+    print()
 
     turn_count = 0
     while True:
