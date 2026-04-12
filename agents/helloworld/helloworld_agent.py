@@ -225,7 +225,7 @@ def main():
     print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
     print(f"    {GOLD}│{RESET}   {GOLD}{BOLD}⚡ HelloWorld Agent ⚡{RESET}                  {GOLD}│{RESET}")
     print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
-    print(f"    {GOLD}│{RESET}   {DIM}Powered by ephaptic coupling{RESET}            {GOLD}│{RESET}")
+    print(f"    {GOLD}│{RESET}   {DIM}Powered by Ephapsys{RESET}                    {GOLD}│{RESET}")
     print(f"    {GOLD}│{RESET}   {DIM}Type 'exit' to quit{RESET}                     {GOLD}│{RESET}")
     print(f"    {GOLD}│{RESET}                                           {GOLD}│{RESET}")
     print(f"    {GOLD}╰───────────────────────────────────────────╯{RESET}")
