@@ -324,17 +324,21 @@ wait_for_model_download() {
   local model_id="$1"
   local max_attempts="${2:-120}"
   local delay="${3:-5}"
-  local status elapsed
-  local frames=("   " ".  " ".. " "...")
+  local status elapsed tick
+  local spin=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local start_ts=$SECONDS
   for ((i=1; i<=max_attempts; i++)); do
     status=$(curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/models/${model_id}" | jq -r '.status // empty' 2>/dev/null || true)
     case "$status" in
       DOWNLOADING)
-        elapsed=$((i * delay))
-        if [[ -t 1 ]]; then
-          printf "\r  ${GOLD}>${RESET} AOC is downloading model from provider${frames[$((i % 4))]} ${DIM}(%ds)${RESET}  " "$elapsed"
-        fi
-        sleep "$delay"
+        # Animate spinner during the poll delay
+        for ((tick=0; tick<delay*2; tick++)); do
+          elapsed=$((SECONDS - start_ts))
+          if [[ -t 1 ]]; then
+            printf "\r  ${GOLD}${spin[$((tick % 10))]}${RESET} Securing model in AOC ${DIM}(%ds)${RESET}  " "$elapsed"
+          fi
+          sleep 0.5
+        done
         ;;
       DOWNLOAD_FAILED)
         [[ -t 1 ]] && printf "\r\033[2K"
