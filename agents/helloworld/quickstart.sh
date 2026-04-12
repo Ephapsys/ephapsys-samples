@@ -22,7 +22,7 @@ banner() {
   printf "    ║                                                   ║\n"
   printf "    ║   ${WHITE}${BOLD}⚡ Ephapsys HelloWorld Agent Quickstart ⚡${RESET}${GOLD}      ║\n"
   printf "    ║                                                   ║\n"
-  printf "    ║   ${RESET}${DIM}Trustworthy AI agents with ephaptic coupling${RESET}${GOLD}    ║\n"
+  printf "    ║   ${RESET}${DIM}Build and deploy trustworthy AI agents${RESET}${GOLD}         ║\n"
   printf "    ║                                                   ║\n"
   printf "    ╚═══════════════════════════════════════════════════╝\n"
   printf "${RESET}\n"
