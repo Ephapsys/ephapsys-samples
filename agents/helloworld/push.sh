@@ -331,8 +331,9 @@ wait_for_model_download() {
     status=$(curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/models/${model_id}" | jq -r '.status // empty' 2>/dev/null || true)
     case "$status" in
       DOWNLOADING)
-        # Animated bouncing progress bar during the poll delay
-        local bar_w=30
+        # Gradient bouncing bar during the poll delay
+        local bar_w=40
+        local -a gc=('\033[38;5;27m' '\033[38;5;33m' '\033[38;5;39m' '\033[38;5;45m' '\033[38;5;48m' '\033[38;5;42m' '\033[38;5;46m' '\033[38;5;118m' '\033[38;5;190m' '\033[38;5;220m')
         for ((tick=0; tick<delay*5; tick++)); do
           elapsed=$((SECONDS - start_ts))
           if [[ -t 1 ]]; then
@@ -340,9 +341,14 @@ wait_for_model_download() {
             if (( pos >= bar_w )); then pos=$(( bar_w * 2 - pos )); fi
             local bar=""
             for ((b=0; b<bar_w; b++)); do
-              if (( b >= pos && b < pos + 5 )); then bar+="="; else bar+=" "; fi
+              if (( b >= pos && b < pos + 6 )); then
+                local ci=$(( (b - pos) * 9 / 5 ))
+                bar+="${gc[$ci]}█"
+              else
+                bar+="\033[2m░"
+              fi
             done
-            printf "\r  ${GOLD}[${GREEN}%s${GOLD}]${RESET} Securing model in AOC ${DIM}(%ds)${RESET}  " "$bar" "$elapsed"
+            printf "\r  ${bar}${RESET}  Securing model in AOC ${DIM}(%ds)${RESET}    " "$elapsed"
           fi
           sleep 0.2
         done

@@ -33,7 +33,23 @@ BLUE = "\033[36m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 GOLD = "\033[38;5;220m"
+CYAN = "\033[38;5;87m"
+MAGENTA = "\033[38;5;213m"
 RESET = "\033[0m"
+
+# Gradient colors for progress bar (blue → cyan → green → gold)
+_GRAD = [
+    "\033[38;5;27m",   # blue
+    "\033[38;5;33m",   # blue-cyan
+    "\033[38;5;39m",   # cyan
+    "\033[38;5;45m",   # cyan-green
+    "\033[38;5;48m",   # green-cyan
+    "\033[38;5;42m",   # green
+    "\033[38;5;46m",   # bright green
+    "\033[38;5;118m",  # lime
+    "\033[38;5;190m",  # yellow-green
+    "\033[38;5;220m",  # gold
+]
 
 
 def phase(msg):
@@ -54,6 +70,11 @@ def main():
     # ── Phase 1: Verification & Personalization ───────────────────
     phase("Verifying agent identity")
     t0 = time.perf_counter()
+
+    # Suppress SDK warnings during verification (expected for first-time personalization)
+    _sdk_logger = logging.getLogger("ephapsys.sdk")
+    _prev_level = _sdk_logger.level
+    _sdk_logger.setLevel(logging.ERROR)
 
     try:
         verified, report = agent.verify()
@@ -83,6 +104,7 @@ def main():
             print(f"  {YELLOW}!{RESET} Agent not ready after personalization.")
             sys.exit(1)
 
+    _sdk_logger.setLevel(_prev_level)  # restore SDK logging
     verify_ms = (time.perf_counter() - t0) * 1000
     ok(f"Agent verified and personalized {DIM}({verify_ms:.0f}ms){RESET}")
 
@@ -105,15 +127,38 @@ def main():
         info("Downloading model artifacts")
 
     _t0 = time.perf_counter()
-    _bar_width = 35
+    _bar_width = 40
     _last_render = [0]
-    _started_download = [False]
+
+    def _gradient_bar(filled, total_w):
+        """Build a gradient-colored progress bar."""
+        bar = ""
+        for i in range(total_w):
+            if i < filled:
+                color_idx = int((i / max(total_w - 1, 1)) * (len(_GRAD) - 1))
+                bar += f"{_GRAD[color_idx]}{'█'}"
+            else:
+                bar += f"{DIM}{'░'}"
+        return bar + RESET
+
+    def _bouncing_bar(elapsed, total_w):
+        """Build a colorful bouncing bar for unknown total."""
+        bar = ""
+        pos = int(elapsed * 4) % (total_w * 2)
+        if pos >= total_w:
+            pos = total_w * 2 - pos
+        for i in range(total_w):
+            if pos <= i < pos + 6:
+                offset = i - pos
+                color_idx = int((offset / 5) * (len(_GRAD) - 1))
+                bar += f"{_GRAD[color_idx]}{'█'}"
+            else:
+                bar += f"{DIM}{'░'}"
+        return bar + RESET
 
     def _render_progress(downloaded, total):
         now = time.perf_counter()
-        if not _started_download[0]:
-            _started_download[0] = True
-        if now - _last_render[0] < 0.3 and (total <= 0 or downloaded < total):
+        if now - _last_render[0] < 0.15 and (total <= 0 or downloaded < total):
             return
         _last_render[0] = now
         elapsed = max(0.001, now - _t0)
@@ -124,18 +169,12 @@ def main():
             filled = (pct * _bar_width) // 100
             tot_mb = total / (1024 * 1024)
             eta = int((total - downloaded) / max(1, downloaded / elapsed)) if downloaded > 0 else 0
-            bar = f"{GREEN}{'=' * filled}{RESET}{DIM}{'.' * (_bar_width - filled)}{RESET}"
-            line = f"\r  [{bar}] {pct:3d}%  {dl_mb:.0f}/{tot_mb:.0f} MB  {DIM}({speed:.1f} MB/s  ETA {eta}s){RESET}    "
+            bar = _gradient_bar(filled, _bar_width)
+            pct_color = GREEN if pct > 80 else GOLD if pct > 40 else BLUE
+            line = f"\r  {bar}  {pct_color}{pct:3d}%{RESET}  {dl_mb:.0f}/{tot_mb:.0f} MB  {DIM}{speed:.1f} MB/s  ETA {eta}s{RESET}    "
         else:
-            # Bouncing bar when total unknown
-            bounce_pos = int(elapsed * 3) % (_bar_width * 2)
-            if bounce_pos >= _bar_width:
-                bounce_pos = _bar_width * 2 - bounce_pos
-            bar_chars = ['.'] * _bar_width
-            for b in range(max(0, bounce_pos), min(_bar_width, bounce_pos + 5)):
-                bar_chars[b] = '='
-            bar = f"{GREEN}{''.join(bar_chars)}{RESET}"
-            line = f"\r  [{bar}]  {dl_mb:.0f} MB  {DIM}({speed:.1f} MB/s  {elapsed:.0f}s){RESET}    "
+            bar = _bouncing_bar(elapsed, _bar_width)
+            line = f"\r  {bar}  {dl_mb:.0f} MB  {DIM}{speed:.1f} MB/s  {elapsed:.0f}s{RESET}    "
         sys.stdout.write(line)
         sys.stdout.flush()
 
@@ -146,7 +185,10 @@ def main():
         print(f"  {YELLOW}!{RESET} Runtime preparation failed: {e}")
         sys.exit(1)
 
+    # Show completed bar
     sys.stdout.write("\r\033[2K")
+    full_bar = "".join(f"{_GRAD[int(i / max(_bar_width-1,1) * (len(_GRAD)-1))]}█" for i in range(_bar_width))
+    sys.stdout.write(f"  {full_bar}{RESET}  {GREEN}100%{RESET}  {DIM}done{RESET}\n")
     sys.stdout.flush()
     runtime_s = time.perf_counter() - _t0
     ok(f"Runtime ready {DIM}({runtime_s:.0f}s){RESET}")
