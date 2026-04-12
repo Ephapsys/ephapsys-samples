@@ -78,6 +78,7 @@ if [[ ! -f ".env" && -f ".env.example" ]]; then
 fi
 
 GLOBAL_START=$SECONDS
+clear
 banner
 
 # ── Parse args ──────────────────────────────────────────────────
