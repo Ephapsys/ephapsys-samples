@@ -252,13 +252,28 @@ def main():
                 continue
 
             t0 = time.perf_counter()
-            result = agent.run(user_input, model_kind="language")
-            inference_ms = (time.perf_counter() - t0) * 1000
-            turn_count += 1
+            streaming = os.getenv("AOC_STREAMING_ENABLED", "0").strip().lower() in ("1", "true", "yes")
 
-            reply = result.strip() if isinstance(result, str) else str(result)
-            print(f"\n  {GREEN}{BOLD}Agent >{RESET} {reply}")
-            print(f"  {DIM}turn {turn_count} | {inference_ms:.0f}ms{RESET}")
+            if streaming:
+                print(f"\n  {GREEN}{BOLD}Agent >{RESET} ", end="", flush=True)
+                token_count = 0
+                first_token_time = None
+                for chunk in agent.run_stream(user_input, model_kind="language"):
+                    if first_token_time is None:
+                        first_token_time = time.perf_counter()
+                    print(chunk, end="", flush=True)
+                    token_count += 1
+                inference_ms = (time.perf_counter() - t0) * 1000
+                ttft_ms = ((first_token_time - t0) * 1000) if first_token_time else inference_ms
+                turn_count += 1
+                print(f"\n  {DIM}turn {turn_count} | {inference_ms:.0f}ms | ttft {ttft_ms:.0f}ms | {token_count} chunks{RESET}")
+            else:
+                result = agent.run(user_input, model_kind="language")
+                inference_ms = (time.perf_counter() - t0) * 1000
+                turn_count += 1
+                reply = result.strip() if isinstance(result, str) else str(result)
+                print(f"\n  {GREEN}{BOLD}Agent >{RESET} {reply}")
+                print(f"  {DIM}turn {turn_count} | {inference_ms:.0f}ms{RESET}")
 
         except KeyboardInterrupt:
             print(f"\n  {DIM}Shutting down.{RESET}")
