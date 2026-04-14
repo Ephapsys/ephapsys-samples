@@ -493,14 +493,14 @@ resolve_agent_template() {
 create_agent_template() {
   local payload
   payload=$(jq -n \
-    --arg label "$AGENT_LABEL" \
-    --arg description "$AGENT_DESCRIPTION" \
+    --arg lbl "$AGENT_LABEL" \
+    --arg desc "$AGENT_DESCRIPTION" \
     --arg model_id "$MODEL_TEMPLATE_ID" \
     --argjson policies "$DEFAULT_POLICY_JSON" '
       {
-        label: $label,
-        description: $description,
-        type: "TEMPLATE",
+        "label": $lbl,
+        "description": $desc,
+        "type": "TEMPLATE",
         models: [
           {
             id: $model_id,
