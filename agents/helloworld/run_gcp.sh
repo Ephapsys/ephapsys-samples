@@ -292,7 +292,21 @@ else
   warn "gcloud has no active account; IAM auto-grant skipped. Ensure your account has roles/compute.instanceAdmin.v1."
 fi
 
-SDK_VERSION="$(python3 -c 'import ephapsys; print(ephapsys.__version__)' 2>/dev/null || echo "0.0.0")"
+VENV_DIR="${HELLOWORLD_VENV:-.venv}"
+if [[ ! -d "$VENV_DIR" ]]; then
+  info "Creating virtualenv at $VENV_DIR"
+  python3 -m venv "$VENV_DIR"
+fi
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+
+if ! python3 -c 'import ephapsys' >/dev/null 2>&1; then
+  info "Installing Ephapsys SDK into $VENV_DIR"
+  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip --quiet
+  PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install ephapsys --quiet
+fi
+
+SDK_VERSION="$(python3 -c 'from importlib.metadata import version; print(version("ephapsys"))' 2>/dev/null || echo "0.0.0")"
 
 if [[ "$SDK_VERSION" == "0.0.0" || -z "$SDK_VERSION" ]]; then
   printf "${MAGENTA}❌ Unable to determine SDK version. Install ephapsys first: pip install ephapsys${RESET}\n"
@@ -561,15 +575,13 @@ if [ -n "$REMOTE_KMS_CREDS" ]; then
 fi
 
 info "📤 Copying sample files to VM"
-SYNC_DIR="$(mktemp -d)"
-TEMP_SRC="$SYNC_DIR/src"
-mkdir -p "$TEMP_SRC"
-cp "$SCRIPT_DIR/helloworld_agent.py" "$TEMP_SRC/"
-cp "$SCRIPT_DIR/run_local.sh" "$TEMP_SRC/"
-cp "$SCRIPT_DIR/reattach_gcp.sh" "$TEMP_SRC/"
-gcloud compute scp --recurse "$TEMP_SRC/." "${INSTANCE_NAME}:~/${REMOTE_DIR}/" \
-  --project="$PROJECT_ID" --zone="$ZONE"
-rm -rf "$SYNC_DIR"
+tar -cf - -C "$SCRIPT_DIR" \
+  helloworld_agent.py \
+  run_local.sh \
+  reattach_gcp.sh \
+| gcloud compute ssh "$INSTANCE_NAME" \
+  --project="$PROJECT_ID" --zone="$ZONE" \
+  -- "tar -xf - -C ~/${REMOTE_DIR}"
 
 UPLOAD_ENV_FILE="$(mktemp)"
 cp "$ACTIVE_ENV_FILE" "$UPLOAD_ENV_FILE"
