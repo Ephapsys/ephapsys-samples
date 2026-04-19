@@ -4,6 +4,7 @@ set -euo pipefail
 BLUE="\033[36m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
+RED="\033[91m"
 RESET="\033[0m"
 
 COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,9 +104,21 @@ if [ -z "$BASE_URL" ] || [ -z "$AOC_ORG_ID" ] || [ -z "$AOC_MODULATION_TOKEN" ] 
 fi
 
 SDK_PACKAGE_SOURCE="${MODULATOR_SDK_PACKAGE_SOURCE:-${SDK_PACKAGE_SOURCE:-pypi}}"
-SDK_VERSION="$(python3 -c 'import ephapsys; print(ephapsys.__version__)' 2>/dev/null || echo "0.0.0")"
-if [ "$SDK_VERSION" = "0.0.0" ] || [ -z "$SDK_VERSION" ]; then
-  echo "❌ Unable to determine SDK version. Install ephapsys first: pip install ephapsys"
+SDK_VERSION="${HELLOWORLD_SDK_VERSION:-${SDK_VERSION:-}}"
+if [ -z "$SDK_VERSION" ]; then
+  SDK_VERSION="$(python3 -c 'import ephapsys; print(ephapsys.__version__)' 2>/dev/null || echo "")"
+fi
+if [ -z "$SDK_VERSION" ]; then
+  # Try the experiment venv
+  for venv_py in .venv/bin/python3 .venv-experiment/bin/python3; do
+    if [ -x "$venv_py" ]; then
+      SDK_VERSION="$("$venv_py" -c 'import ephapsys; print(ephapsys.__version__)' 2>/dev/null || echo "")"
+      [ -n "$SDK_VERSION" ] && break
+    fi
+  done
+fi
+if [ -z "$SDK_VERSION" ]; then
+  echo "❌ Unable to determine SDK version. Set HELLOWORLD_SDK_VERSION in .env or install ephapsys."
   exit 1
 fi
 
@@ -175,6 +188,7 @@ build_gpu_candidates() {
         t4) gpu_type="nvidia-tesla-t4"; machine_type="n1-standard-8"; gpu_count="1"; gpu_label="t4" ;;
         l4) gpu_type="nvidia-l4"; machine_type="g2-standard-8"; gpu_count="1"; gpu_label="l4" ;;
         v100) gpu_type="nvidia-tesla-v100"; machine_type="n1-standard-8"; gpu_count="1"; gpu_label="v100" ;;
+        a100) gpu_type="nvidia-a100-80gb"; machine_type="a2-highgpu-1g"; gpu_count="1"; gpu_label="a100" ;;
         p100) gpu_type="nvidia-tesla-p100"; machine_type="n1-standard-8"; gpu_count="1"; gpu_label="p100" ;;
         *)
           continue
@@ -248,25 +262,36 @@ create_gpu_vm() {
 
   local gpu_total=${#gpu_candidates[@]}
   local zone_total=${#zone_candidates[@]}
+  local attempt=0
+  local total_attempts=$((gpu_total * zone_total))
   local gpu_idx=0
+
+  printf "\n  ${BLUE}Searching for available GPU across %d GPU types x %d zones (%d combinations)${RESET}\n\n" \
+    "$gpu_total" "$zone_total" "$total_attempts"
+
   for candidate in "${gpu_candidates[@]}"; do
     gpu_idx=$((gpu_idx + 1))
     IFS=':' read -r gpu_type machine_type gpu_count gpu_label <<< "$candidate"
+    printf "  ${YELLOW}[GPU %d/%d]${RESET} Trying ${BLUE}%s${RESET} (%s)\n" "$gpu_idx" "$gpu_total" "$gpu_label" "$machine_type"
     local zone_idx=0
     for zone_candidate in "${zone_candidates[@]}"; do
       zone_idx=$((zone_idx + 1))
-      echo "⏳ [STEP 1] Creating GCP VM now: $INSTANCE_NAME (gpu=${gpu_label}, project=$PROJECT_ID, zone=${zone_candidate}, candidate ${gpu_idx}/${gpu_total}, zone ${zone_idx}/${zone_total})..."
-      if gcloud compute instances create "$INSTANCE_NAME" \
+      attempt=$((attempt + 1))
+      printf "    %s %-22s " "⏳" "$zone_candidate"
+      local gcloud_output
+      gcloud_output=$(gcloud compute instances create "$INSTANCE_NAME" \
         --project="$PROJECT_ID" --zone="$zone_candidate" \
         --machine-type="$machine_type" \
         --accelerator="type=$gpu_type,count=$gpu_count" \
-        --image-family="pytorch-2-7-cu128-ubuntu-2204-nvidia-570" \
+        --image-family="pytorch-2-9-cu129-ubuntu-2204-nvidia-580" \
         --image-project="deeplearning-platform-release" \
         --boot-disk-size="$DISK_SIZE" --maintenance-policy=TERMINATE \
         --scopes=https://www.googleapis.com/auth/cloud-platform \
         --metadata="install-nvidia-driver=True" \
         --network=default --subnet=default --address="" \
-        --restart-on-failure --labels=job=modulate,gpu="$gpu_label",tag="$EXPERIMENT_TAG",kind="$MODULATOR_KIND"; then
+        --restart-on-failure --labels=job=modulate,gpu="$gpu_label",tag="$EXPERIMENT_TAG",kind="$MODULATOR_KIND" 2>&1)
+      if [ $? -eq 0 ]; then
+        printf "${GREEN}✓ CREATED${RESET}\n"
         GPU_TYPE="$gpu_type"
         GPU_COUNT="$gpu_count"
         MACHINE_TYPE="$machine_type"
@@ -284,8 +309,21 @@ MACHINE_TYPE=$MACHINE_TYPE
 GPU_CHOICE=$GPU_CHOICE
 EOF
         fi
-        success "Selected shared modulation VM: instance=${INSTANCE_NAME} gpu=${GPU_CHOICE} machine=${MACHINE_TYPE} zone=${ZONE} project=${PROJECT_ID}"
+        printf "\n  ${GREEN}✓ GPU VM created: %s (%s) in %s${RESET}\n\n" "$INSTANCE_NAME" "$gpu_label" "$zone_candidate"
         return 0
+      else
+        # Parse the error for a short reason
+        local reason="unknown"
+        if echo "$gcloud_output" | grep -q "ZONE_RESOURCE_POOL_EXHAUSTED"; then
+          reason="exhausted"
+        elif echo "$gcloud_output" | grep -q "QUOTA"; then
+          reason="quota"
+        elif echo "$gcloud_output" | grep -q "Permission denied"; then
+          reason="no access"
+        elif echo "$gcloud_output" | grep -q "does not exist"; then
+          reason="not available"
+        fi
+        printf "${RED}✗ %s${RESET}\n" "$reason"
       fi
     done
   done
@@ -321,8 +359,15 @@ if [ "$SHARED_INSTANCE_REUSED" = "1" ]; then
   info "Shared modulation VM ready: instance=${INSTANCE_NAME} gpu=${GPU_CHOICE} machine=${MACHINE_TYPE} zone=${ZONE} project=${PROJECT_ID}"
 fi
 
-echo "⏳ Waiting 20s for VM to boot..."
-sleep 20
+echo "⏳ Waiting for VM to become SSH-ready..."
+for i in $(seq 1 30); do
+  if gcloud compute ssh "$INSTANCE_NAME" --project="$PROJECT_ID" --zone="$ZONE" --command "echo ready" 2>/dev/null; then
+    printf "  ${GREEN}✓ VM is ready (${i}0s)${RESET}\n"
+    break
+  fi
+  printf "  ⏳ Attempt %d/30...\r" "$i"
+  sleep 10
+done
 
 echo "⚙️ Preparing base packages on remote VM..."
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command "
@@ -353,12 +398,26 @@ gcloud compute scp --project="$PROJECT_ID" "$TEMP_SRC/common/requirements.gcp.tx
 gcloud compute scp --project="$PROJECT_ID" "$MODULATOR_DIR/.env" "$INSTANCE_NAME:$REMOTE_DIR/.env" --zone="$ZONE"
 
 SDK_PACKAGE_SOURCE_LC="$(printf '%s' "$SDK_PACKAGE_SOURCE" | tr '[:upper:]' '[:lower:]')"
+
+# Build remote setup + run scripts as temp files (avoids quoting hell with ssh)
+REMOTE_SETUP_SCRIPT="$(mktemp "${TEMP_SRC}/setup_remote.XXXXXX.sh")"
+REMOTE_RUN_SCRIPT="$(mktemp "${TEMP_SRC}/run_remote.XXXXXX.sh")"
+
+# -- Setup script: create venv + install SDK + deps --
+cat > "$REMOTE_SETUP_SCRIPT" <<SETUP_EOF
+#!/usr/bin/env bash
+set -e
+python3 -m venv ~/.venvs/ephapsys-modulator
+source ~/.venvs/ephapsys-modulator/bin/activate
+python -m pip install --upgrade pip >/dev/null
+SETUP_EOF
+
 case "$SDK_PACKAGE_SOURCE_LC" in
   pypi)
-    REMOTE_PIP_INSTALL=$'python3 -m venv ~/.venvs/ephapsys-modulator\nsource ~/.venvs/ephapsys-modulator/bin/activate\npython -m pip install --upgrade pip >/dev/null\npython -m pip install "ephapsys[modulation,audio,vision,embedding,eval]=='"$SDK_VERSION"'" >/dev/null\npython -m pip install -r '"$REMOTE_BASE_DIR"'/requirements.gcp.txt >/dev/null\nif [ -f '"$REMOTE_DIR"'/requirements.txt ]; then python -m pip install -r '"$REMOTE_DIR"'/requirements.txt >/dev/null; fi'
+    echo "python -m pip install 'ephapsys[modulation,audio,vision,embedding,eval]==${SDK_VERSION}' >/dev/null" >> "$REMOTE_SETUP_SCRIPT"
     ;;
   testpypi)
-    REMOTE_PIP_INSTALL=$'python3 -m venv ~/.venvs/ephapsys-modulator\nsource ~/.venvs/ephapsys-modulator/bin/activate\npython -m pip install --upgrade pip >/dev/null\npython -m pip install --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple "ephapsys[modulation,audio,vision,embedding,eval]=='"$SDK_VERSION"'" >/dev/null\npython -m pip install -r '"$REMOTE_BASE_DIR"'/requirements.gcp.txt >/dev/null\nif [ -f '"$REMOTE_DIR"'/requirements.txt ]; then python -m pip install -r '"$REMOTE_DIR"'/requirements.txt >/dev/null; fi'
+    echo "python -m pip install --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple 'ephapsys[modulation,audio,vision,embedding,eval]==${SDK_VERSION}' >/dev/null" >> "$REMOTE_SETUP_SCRIPT"
     ;;
   *)
     echo "❌ Unsupported SDK package source for GCP modulation: $SDK_PACKAGE_SOURCE"
@@ -366,22 +425,41 @@ case "$SDK_PACKAGE_SOURCE_LC" in
     ;;
 esac
 
-echo "📦 Installing remote Python environment..."
-gcloud compute ssh "$INSTANCE_NAME" --project="$PROJECT_ID" --zone="$ZONE" --command "bash -lc $(printf '%q' "$REMOTE_PIP_INSTALL")"
-
-REMOTE_RUN=$'cd '"$REMOTE_DIR"$'\nsource ~/.venvs/ephapsys-modulator/bin/activate\nexport MODULATOR_SKIP_SDK_SETUP=1\nchmod +x ./*.sh ../modulate_local_common.sh >/dev/null 2>&1 || true\nif [ -f ./modulate.sh ]; then exec ./modulate.sh; elif [ -f ./modulate_local.sh ]; then exec ./modulate_local.sh; else echo "❌ No modulate.sh or modulate_local.sh in '"$REMOTE_DIR"$'"; exit 1; fi\n'
-if [ "$TRAIN_MODE" = "1" ]; then
-  REMOTE_RUN="TRAIN_MODE=1"$'\n'"$REMOTE_RUN"
-else
-  REMOTE_RUN="TRAIN_MODE=0"$'\n'"$REMOTE_RUN"
+cat >> "$REMOTE_SETUP_SCRIPT" <<SETUP_EOF2
+python -m pip install -r ${REMOTE_BASE_DIR}/requirements.gcp.txt >/dev/null
+if [ -f ${REMOTE_DIR}/requirements.txt ]; then
+  python -m pip install -r ${REMOTE_DIR}/requirements.txt >/dev/null
 fi
+SETUP_EOF2
+
+# -- Run script: activate venv + run modulator --
+cat > "$REMOTE_RUN_SCRIPT" <<RUN_EOF
+#!/usr/bin/env bash
+set -e
+export TRAIN_MODE=${TRAIN_MODE}
+cd ${REMOTE_DIR}
+source ~/.venvs/ephapsys-modulator/bin/activate
+export MODULATOR_SKIP_SDK_SETUP=1
+chmod +x ./*.sh ../modulate_local_common.sh >/dev/null 2>&1 || true
+if [ -f ./modulate.sh ]; then
+  exec ./modulate.sh
+elif [ -f ./modulate_local.sh ]; then
+  exec ./modulate_local.sh
+else
+  echo "❌ No modulate.sh or modulate_local.sh in ${REMOTE_DIR}"
+  exit 1
+fi
+RUN_EOF
+
+# Copy scripts to VM
+gcloud compute scp --project="$PROJECT_ID" "$REMOTE_SETUP_SCRIPT" "$INSTANCE_NAME:${REMOTE_BASE_DIR}/setup_remote.sh" --zone="$ZONE"
+gcloud compute scp --project="$PROJECT_ID" "$REMOTE_RUN_SCRIPT" "$INSTANCE_NAME:${REMOTE_BASE_DIR}/run_remote.sh" --zone="$ZONE"
+
+echo "📦 Installing remote Python environment..."
+gcloud compute ssh "$INSTANCE_NAME" --project="$PROJECT_ID" --zone="$ZONE" --command "bash -l ${REMOTE_BASE_DIR}/setup_remote.sh"
 
 echo "🚀 Running $MODULATOR_KIND modulator remotely on VM..."
-gcloud compute ssh "$INSTANCE_NAME" --project="$PROJECT_ID" --zone="$ZONE" -- -t "
-  set -e
-  bash -lc $(printf '%q' "$REMOTE_RUN")
-  ls -lhR $REMOTE_DIR/artifacts* $REMOTE_DIR/out $REMOTE_DIR/results 2>/dev/null || true
-"
+gcloud compute ssh "$INSTANCE_NAME" --project="$PROJECT_ID" --zone="$ZONE" -- -t "bash -l ${REMOTE_BASE_DIR}/run_remote.sh; ls -lhR $REMOTE_DIR/artifacts* $REMOTE_DIR/out $REMOTE_DIR/results 2>/dev/null || true"
 
 echo "📥 Copying results locally..."
 gcloud compute ssh "$INSTANCE_NAME" --project="$PROJECT_ID" --zone="$ZONE" --command "ls -lhR $REMOTE_DIR/artifacts* $REMOTE_DIR/out $REMOTE_DIR/results 2>/dev/null" || echo "⚠️ No remote artifacts found"

@@ -24,9 +24,17 @@ ensure_runtime_env() {
   sdk_version="${MODULATOR_SDK_VERSION:-${SDK_VERSION:-}}"
 
   # Always use a dedicated venv to avoid version conflicts with system packages
+  # Prefer Python 3.12 — datasets/dill is incompatible with Python 3.14
+  local py_bin="python3"
+  for candidate in python3.12 python3.13 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      py_bin="$candidate"
+      break
+    fi
+  done
   if [ ! -d "$venv" ]; then
-    info "Creating virtualenv at $venv"
-    python3 -m venv "$venv"
+    info "Creating virtualenv at $venv (using $py_bin)"
+    "$py_bin" -m venv "$venv"
   fi
   # shellcheck disable=SC1090
   source "$venv/bin/activate"
@@ -46,8 +54,20 @@ ensure_runtime_env() {
       testpypi)
         pip_args="$pip_args --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple"
         ;;
+      local)
+        # Install from local SDK source tree (for development)
+        local sdk_dir="${MODULATOR_SDK_LOCAL_PATH:-$(cd "$SCRIPT_DIR" && cd "../../../ephapsys-sdk/sdk/python" 2>/dev/null && pwd)}"
+        if [ -d "$sdk_dir" ]; then
+          info "Installing Ephapsys SDK from local source: $sdk_dir"
+          PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --upgrade pip $pip_args
+          PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install -e "${sdk_dir}[${sdk_extras}]" $pip_args
+          return
+        else
+          error "Local SDK not found at $sdk_dir — falling back to pypi"
+        fi
+        ;;
       *)
-        error "Unsupported SDK_PACKAGE_SOURCE: $sdk_source (use pypi or testpypi)"
+        error "Unsupported SDK_PACKAGE_SOURCE: $sdk_source (use pypi, testpypi, or local)"
         exit 1
         ;;
     esac

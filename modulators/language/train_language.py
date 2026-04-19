@@ -64,8 +64,13 @@ def _spinner(msg, stop_event):
     sys.stdout.write(f"\r  {GREEN}+{RESET} {msg} {DIM}({elapsed}s){RESET}                    \n")
     sys.stdout.flush()
 
-def with_spinner(msg, fn, *args, **kwargs):
-    """Run fn with a spinner, return its result."""
+def with_spinner(msg, fn, *args, no_spinner=False, **kwargs):
+    """Run fn with a spinner, return its result.
+    Pass no_spinner=True to skip the spinner (e.g. when fn has its own progress bar).
+    """
+    if no_spinner:
+        print(f"  {GOLD}>{RESET} {msg}")
+        return fn(*args, **kwargs)
     stop = threading.Event()
     t = threading.Thread(target=_spinner, args=(msg, stop), daemon=True)
     t.start()
@@ -91,6 +96,21 @@ def evaluate_baseline(mc, model, tokenizer, model_template_id, ds_name, ds_confi
         ds_name=ds_name, ds_config=ds_config, ds_split=ds_split, steps=steps
     ):
         baseline_stream.append(update)
+        step = update.get("step", len(baseline_stream))
+        acc = update.get("accuracy", 0)
+        loss = update.get("loss", 0)
+        ppl = update.get("perplexity", 0)
+        bar_w = 20
+        filled = int(bar_w * step / max(steps, 1))
+        bar = "█" * filled + "░" * (bar_w - filled)
+        acc_c = GREEN if acc >= 0.5 else YELLOW
+        sys.stdout.write(
+            f"\r  [{bar}] {step}/{steps}  "
+            f"loss={loss:.4f}  ppl={ppl:.2f}  acc={acc_c}{acc:.4f}{RESET}   "
+        )
+        sys.stdout.flush()
+    if baseline_stream:
+        sys.stdout.write("\n")
 
     baseline = baseline_stream[-1] if baseline_stream else {}
     print(f"{YELLOW}[BASELINE] Results: {baseline}{RESET}")
@@ -215,6 +235,11 @@ def main():
     import signal
     signal.signal(signal.SIGINT, _cleanup_on_exit)
     signal.signal(signal.SIGTERM, _cleanup_on_exit)
+    # Ctrl+\ (SIGQUIT) as a fallback when Ctrl+C can't interrupt torch ops
+    try:
+        signal.signal(signal.SIGQUIT, _cleanup_on_exit)
+    except (OSError, AttributeError):
+        pass
 
     if args.auto_start:
 
@@ -239,13 +264,28 @@ def main():
                 exit(1)
 
         # --- Define dataset, KPIs, search config ---
-        dataset = {
-            "kind": "repo",
-            "source": "external",
-            "name": "wikitext",
-            "config": "wikitext-103-raw-v1",
-            "split": "train[:1%]",
-        }
+        # Dataset can be overridden via env vars:
+        #   AOC_DATASET_NAME=wikitext  AOC_DATASET_CONFIG=wikitext-103-raw-v1  AOC_DATASET_SPLIT=train[:1%]
+        #   AOC_DATASET_PATH=/path/to/uploaded.jsonl  (for uploaded datasets)
+        ds_path = os.getenv("AOC_DATASET_PATH", "").strip()
+        if ds_path:
+            dataset = {
+                "kind": "file",
+                "source": "uploaded",
+                "path": ds_path,
+                "name": os.path.basename(ds_path),
+            }
+        else:
+            dataset = {
+                "kind": "repo",
+                "source": "external",
+                "name": os.getenv("AOC_DATASET_NAME", "wikitext"),
+                "config": os.getenv("AOC_DATASET_CONFIG", "wikitext-103-raw-v1"),
+                "split": os.getenv("AOC_DATASET_SPLIT", "train[:1%]"),
+            }
+
+        max_steps_per_trial = int(os.getenv("AOC_STEPS_PER_TRIAL", "10"))
+        search_budget = int(os.getenv("AOC_SEARCH_BUDGET", "2"))
 
         kpi = {
             "targets": [
@@ -253,12 +293,12 @@ def main():
                 {"name": "loss", "direction": "min", "weight": 1},
                 {"name": "perplexity", "direction": "min", "weight": 1},
             ],
-            "maxSteps": 10,
+            "maxSteps": max_steps_per_trial,
         }
 
         search = {
             "algo": "bayes",
-            "budget": 1,
+            "budget": search_budget,
             "parallel": 1,
             "multi_objective": True,
             "space": {
@@ -291,7 +331,7 @@ def main():
     # --- Download model snapshot into run_dir ---
     phase("Downloading model snapshot")
     local_model_dir = with_spinner("Downloading model from AOC",
-        mc.download_and_extract_model, args.model_template_id, run_dir)
+        mc.download_and_extract_model, args.model_template_id, run_dir, no_spinner=True)
 
     # --- Load model (Seq2Seq or Causal) from local snapshot ---
     phase("Loading model")
@@ -326,7 +366,14 @@ def main():
     variant = recipe.get("variant")
     steps = int((recipe.get("kpi") or {}).get("maxSteps") or 0)
     dataset_cfg = recipe.get("dataset", {})
+    ds_kind = dataset_cfg.get("kind", "repo")
+    ds_path = dataset_cfg.get("path", "")
     ds_name, ds_config, ds_split = dataset_cfg.get("name"), dataset_cfg.get("config"), dataset_cfg.get("split")
+    # For file-based datasets, use the path as the name for load_dataset("json", ...)
+    if ds_kind == "file" and ds_path:
+        ds_name = ds_path
+        ds_config = None
+        ds_split = None
 
     if not variant:
         raise ValueError("Trainer requires 'variant' in recipe (additive or multiplicative).")
@@ -357,7 +404,11 @@ def main():
     # Helper to build training dataset when training is enabled
     def build_training_ds(ds_name, ds_config, ds_split):
         from datasets import load_dataset
-        ds = load_dataset(ds_name, ds_config, split=ds_split)
+        if ds_kind == "file" and ds_path:
+            # Load from uploaded JSONL file
+            ds = load_dataset("json", data_files=ds_path, split="train")
+        else:
+            ds = load_dataset(ds_name, ds_config, split=ds_split)
         def sample_at(i):
             return ds[int(i % len(ds))]
         return ds, sample_at
@@ -489,6 +540,17 @@ def main():
                 loss = update.get("loss", 0)
                 ppl = update.get("perplexity", 0)
 
+                # --- Inline progress ---
+                bar_w = 20
+                filled = int(bar_w * step / max(steps, 1))
+                bar = "█" * filled + "░" * (bar_w - filled)
+                acc_c = GREEN if acc >= 0.5 else YELLOW
+                sys.stdout.write(
+                    f"\r  [{bar}] {step}/{steps}  "
+                    f"loss={loss:.4f}  ppl={ppl:.2f}  acc={acc_c}{acc:.4f}{RESET}   "
+                )
+                sys.stdout.flush()
+
                 # --- Report live core metrics ---
                 mc._report_model_metrics(
                     args.model_template_id,
@@ -504,6 +566,9 @@ def main():
                 }
                 if any(v != 0 for v in quality_metrics.values()):
                     mc._report_model_metrics(args.model_template_id, quality_metrics, step=step)
+
+            if metrics_stream:
+                sys.stdout.write("\n")
 
         # Inspect Λ after modulation/training
         lambda_after = inspect_lambda(model, label="Λ (after)")
@@ -702,13 +767,19 @@ def main():
                     if any(v != 0 for v in quality_metrics.values()):
                         mc._report_model_metrics(args.model_template_id, quality_metrics, step=step)
 
-                    # Optional: log partial quality metrics inline
-                    print(
-                        f"[TRIAL {trial_num}] Step {step}/{steps} "
-                        f"| acc={acc:.4f} | loss={loss:.4f} | ppl={ppl:.2f} "
-                        f"| rouge1={update.get('rouge1',0):.4f} | bleu={update.get('bleu',0):.4f}"
+                    # Inline progress
+                    bar_w = 20
+                    filled = int(bar_w * step / max(steps, 1))
+                    bar = "█" * filled + "░" * (bar_w - filled)
+                    acc_c = GREEN if acc >= 0.5 else YELLOW
+                    sys.stdout.write(
+                        f"\r  [{bar}] {step}/{steps}  "
+                        f"loss={loss:.4f}  ppl={ppl:.2f}  acc={acc_c}{acc:.4f}{RESET}   "
                     )
+                    sys.stdout.flush()
 
+                if metrics_stream:
+                    sys.stdout.write("\n")
 
             # Inspect Λ after modulation/training
             lambda_after = inspect_lambda(model_trial, label=f"Λ (trial {trial_num} after)")
