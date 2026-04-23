@@ -33,7 +33,7 @@ import os, sys, json, datetime, argparse
 import torch
 from transformers import AutoTokenizer, AutoModel
 
-from ephapsys.modulation import ModulatorClient
+from ephapsys.modulation import ModulatorClient, compute_indispensability_loss, run_ablation_probe
 
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -131,6 +131,16 @@ def main():
     dataset_cfg = recipe.get("dataset", {})
     ds_name, ds_config, ds_split = dataset_cfg.get("name"), dataset_cfg.get("config"), dataset_cfg.get("split")
 
+    # --- Governance mode and indispensability config ---
+    governance_mode = recipe.get("governance_mode", "standard")
+    indisp_cfg = recipe.get("indispensability") or {}
+    mod_block = tpl.get("Modulation") or {}
+    if not indisp_cfg and mod_block.get("indispensability"):
+        indisp_cfg = mod_block["indispensability"]
+    if not governance_mode or governance_mode == "standard":
+        governance_mode = mod_block.get("governance_mode", "standard")
+    is_indispensable = governance_mode == "indispensable" or indisp_cfg.get("enabled", False)
+
     if not variant:
         raise ValueError("Trainer requires 'variant' in recipe (additive or multiplicative).")
 
@@ -179,10 +189,23 @@ def main():
             print("[WARN] No metrics were produced for this run — assigning defaults.")
             last = {"cosine_sim": 0.0, "recall_at_k": 0.0}
 
+        indisp_metrics = None
+        if is_indispensable:
+            print("[INDISPENSABLE] Running ablation probe...")
+            try:
+                import torch
+                probe_inputs = tokenizer("This is a governance test.", return_tensors="pt", truncation=True, max_length=64)
+                probe_inputs = {k: v.to(device) for k, v in probe_inputs.items()}
+                indisp_metrics = run_ablation_probe(model, probe_inputs)
+                print(f"  Governance Strength: {indisp_metrics.get('governance_strength', 'unknown').upper()}")
+                print(f"  Separation: {indisp_metrics.get('separation_ratio', 0)}x")
+            except Exception as e:
+                print(f"[WARN] Ablation probe failed: {e}")
         mc.finalize_and_certify(
             run_dir, model, tokenizer,
             last, trial_cfg["variant"],
-            job_id, args.model_template_id
+            job_id, args.model_template_id,
+            indispensability_metrics=indisp_metrics
         )
         print(f"[DONE] Manual mode finished successfully.")
 
@@ -230,10 +253,23 @@ def main():
                 print(f"{GREEN}[BEST] Updated best score={best_score:.3f}, config={best_variant}{RESET}")
 
         if best_metrics:
+            indisp_metrics = None
+            if is_indispensable:
+                print("[INDISPENSABLE] Running ablation probe...")
+                try:
+                    import torch
+                    probe_inputs = tokenizer("This is a governance test.", return_tensors="pt", truncation=True, max_length=64)
+                    probe_inputs = {k: v.to(device) for k, v in probe_inputs.items()}
+                    indisp_metrics = run_ablation_probe(model, probe_inputs)
+                    print(f"  Governance Strength: {indisp_metrics.get('governance_strength', 'unknown').upper()}")
+                    print(f"  Separation: {indisp_metrics.get('separation_ratio', 0)}x")
+                except Exception as e:
+                    print(f"[WARN] Ablation probe failed: {e}")
             mc.finalize_and_certify(
                 run_dir, model, tokenizer,
                 best_metrics, best_variant.get("variant"),
-                job_id, args.model_template_id
+                job_id, args.model_template_id,
+                indispensability_metrics=indisp_metrics
             )
             summary["best_score"] = best_score
             summary["best_metrics"] = best_metrics

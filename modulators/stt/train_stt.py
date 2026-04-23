@@ -10,7 +10,7 @@ import os, sys, json, datetime, argparse
 import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
-from ephapsys.modulation import ModulatorClient
+from ephapsys.modulation import ModulatorClient, compute_indispensability_loss, run_ablation_probe
 
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -128,6 +128,16 @@ def main():
     if not variant:
         raise ValueError("Trainer requires 'variant' in recipe (additive or multiplicative).")
 
+    # --- Governance mode and indispensability config ---
+    governance_mode = recipe.get("governance_mode", "standard")
+    indisp_cfg = recipe.get("indispensability") or {}
+    mod_block = tpl.get("Modulation") or {}
+    if not indisp_cfg and mod_block.get("indispensability"):
+        indisp_cfg = mod_block["indispensability"]
+    if not governance_mode or governance_mode == "standard":
+        governance_mode = mod_block.get("governance_mode", "standard")
+    is_indispensable = governance_mode == "indispensable" or indisp_cfg.get("enabled", False)
+
     print("=== JOB CONFIG FROM BACKEND ===")
     print(f"Job ID:      {job_id}")
     print(f"Mode:        {mode}")
@@ -156,6 +166,21 @@ def main():
 
     print(f"{GREEN}Final aggregated metrics: {last}{RESET}")
 
+    # --- Indispensability ablation probe ---
+    indisp_metrics = None
+    if is_indispensable:
+        print("[INDISPENSABLE] Running ablation probe...")
+        try:
+            import torch
+            probe_audio = torch.randn(1, 16000)
+            probe_inputs = processor(probe_audio, sampling_rate=16000, return_tensors="pt", padding=True)
+            probe_inputs = {k: v.to(device) for k, v in probe_inputs.items()}
+            indisp_metrics = run_ablation_probe(model, probe_inputs)
+            print(f"  Governance Strength: {indisp_metrics.get('governance_strength', 'unknown').upper()}")
+            print(f"  Separation: {indisp_metrics.get('separation_ratio', 0)}x")
+        except Exception as e:
+            print(f"[WARN] Ablation probe failed: {e}")
+
     # --- Report back to backend ---
     mc.finalize_and_certify(
         run_dir,
@@ -164,7 +189,8 @@ def main():
         last,
         variant,
         job_id,
-        args.model_template_id
+        args.model_template_id,
+        indispensability_metrics=indisp_metrics
     )
     print(f"{GREEN}Reported metrics to backend and certified results.{RESET}")
 

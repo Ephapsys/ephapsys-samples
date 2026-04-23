@@ -32,7 +32,7 @@ import os, sys, json, datetime, argparse
 import torch
 from transformers import AutoImageProcessor, YolosForObjectDetection
 
-from ephapsys.modulation import ModulatorClient
+from ephapsys.modulation import ModulatorClient, compute_indispensability_loss, run_ablation_probe
 
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -148,6 +148,16 @@ def main():
     dataset_cfg = recipe.get("dataset", {})
     ds_name, ds_config, ds_split = dataset_cfg.get("name"), dataset_cfg.get("config"), dataset_cfg.get("split")
 
+    # --- Governance mode and indispensability config ---
+    governance_mode = recipe.get("governance_mode", "standard")
+    indisp_cfg = recipe.get("indispensability") or {}
+    mod_block = tpl.get("Modulation") or {}
+    if not indisp_cfg and mod_block.get("indispensability"):
+        indisp_cfg = mod_block["indispensability"]
+    if not governance_mode or governance_mode == "standard":
+        governance_mode = mod_block.get("governance_mode", "standard")
+    is_indispensable = governance_mode == "indispensable" or indisp_cfg.get("enabled", False)
+
     if not variant:
         raise ValueError("Trainer requires 'variant' in recipe (additive or multiplicative).")
 
@@ -186,6 +196,24 @@ def main():
 
     print(f"{GREEN}Final aggregated metrics: {last}{RESET}")
 
+    # --- Run ablation probe if indispensable mode ---
+    indisp_metrics = None
+    if is_indispensable:
+        print("[INDISPENSABLE] Running ablation probe...")
+        # Build a probe input from the model's processor
+        import torch
+        try:
+            from PIL import Image
+            probe_img = Image.new("RGB", (224, 224), color="red")
+            probe_inputs = processor(images=probe_img, return_tensors="pt")
+            probe_inputs = {k: v.to(device) for k, v in probe_inputs.items()}
+            probe_inputs["labels"] = torch.tensor([0], device=device)
+            indisp_metrics = run_ablation_probe(model, probe_inputs)
+            print(f"  Governance Strength: {indisp_metrics.get('governance_strength', 'unknown').upper()}")
+            print(f"  Separation: {indisp_metrics.get('separation_ratio', 0)}x")
+        except Exception as e:
+            print(f"[WARN] Ablation probe failed: {e}")
+
     # --- Report back to backend ---
     mc.finalize_and_certify(
         run_dir,
@@ -194,7 +222,8 @@ def main():
         last,
         variant,
         job_id,
-        args.model_template_id
+        args.model_template_id,
+        indispensability_metrics=indisp_metrics
     )
     print(f"{GREEN}Reported metrics to backend and certified results.{RESET}")
 
