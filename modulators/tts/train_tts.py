@@ -28,8 +28,8 @@ Before starting a job in the UI:
    - KPI Targets: enable at least one KPI relevant to TTS (e.g., WER, MOS)
 """
 
-import os, sys, json, datetime
-import argparse
+import os, sys, json, datetime, argparse
+from copy import deepcopy
 import torch
 from transformers import SpeechT5Processor, SpeechT5ForTextToSpeech
 
@@ -51,9 +51,12 @@ def main():
     parser.add_argument("--api_key", type=str, default=os.getenv("AOC_MODULATION_TOKEN", ""))
     parser.add_argument("--model_template_id", type=str, required=True)   # <- still required
     parser.add_argument("--outdir", type=str, default="./out")
+    parser.add_argument("--train", action="store_true", help="Enable gradient updates during per-step loop")
+    parser.add_argument("--train_mode", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--auto_start", type=int, default=int(os.getenv("AUTO_START", "1")),
         help="1=auto-call /modulation/start (default), 0=manual mode (UI must start job)")
     args = parser.parse_args()
+    args.train = bool(args.train or args.train_mode)
 
     if not args.api_key:
         raise RuntimeError("API token missing. Provide --api_key or set AOC_MODULATION_TOKEN in the environment")
@@ -200,7 +203,13 @@ def main():
                                  last_cfg=trial_cfg, last_score=None)
         print(f"[TRIAL] Manual config → {trial_cfg}")
 
+        # Indispensable mode forces training — ECM must become load-bearing.
+        use_training = args.train or is_indispensable
         all_metrics, last = [], None
+        if use_training:
+            print("[TRAIN] Training enabled in manual mode — running gradient updates per step.")
+            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+            model.train()
         for last in mc.compute_tts_metrics_stream(
             model, processor, args.model_template_id,
             ds_name=ds_name, ds_config=ds_config, ds_split=ds_split, steps=steps
@@ -253,9 +262,18 @@ def main():
             trial_num += 1
             print(f"\n[TRIAL {trial_num}/{budget}] Config → {trial_cfg}")
 
+            # Indispensable mode forces training — ECM must become load-bearing.
+            use_training = args.train or is_indispensable
+            model_trial = deepcopy(model) if use_training else model
+
+            if use_training:
+                print(f"[TRAIN] Training enabled for trial {trial_num} — running gradient updates per step.")
+                optimizer = torch.optim.AdamW(model_trial.parameters(), lr=1e-4)
+                model_trial.train()
+
             all_metrics, last = [], None
             for last in mc.compute_tts_metrics_stream(
-                model, processor, args.model_template_id,
+                model_trial, processor, args.model_template_id,
                 ds_name=ds_name, ds_config=ds_config, ds_split=ds_split,
                 steps=int(trial_cfg.get("maxSteps") or steps)
             ):
