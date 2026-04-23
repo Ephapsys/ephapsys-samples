@@ -30,7 +30,7 @@ Before starting a job in the UI:
 
 
 import os, sys, json, datetime, argparse
-from ephapsys.modulation import ModulatorClient
+from ephapsys.modulation import ModulatorClient, compute_indispensability_loss, run_ablation_probe
 
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -85,6 +85,16 @@ def main():
     if not variant:
         raise ValueError("Trainer requires 'variant' in recipe (additive or multiplicative).")
 
+    # --- Governance mode and indispensability config ---
+    governance_mode = recipe.get("governance_mode", "standard")
+    indisp_cfg = recipe.get("indispensability") or {}
+    mod_block = tpl.get("Modulation") or {}
+    if not indisp_cfg and mod_block.get("indispensability"):
+        indisp_cfg = mod_block["indispensability"]
+    if not governance_mode or governance_mode == "standard":
+        governance_mode = mod_block.get("governance_mode", "standard")
+    is_indispensable = governance_mode == "indispensable" or indisp_cfg.get("enabled", False)
+
     print("=== JOB CONFIG FROM BACKEND ===")
     print(f"Job ID:      {job_id}")
     print(f"Mode:        {mode}")
@@ -113,6 +123,11 @@ def main():
 
     print(f"{GREEN}Final aggregated metrics: {last}{RESET}")
 
+    # --- Indispensability ablation probe ---
+    indisp_metrics = None
+    if is_indispensable:
+        print("[INDISPENSABLE] Running ablation probe (skipped for RL — no direct model input).")
+
     # --- Report back to backend ---
     placeholder = _RLPlaceholderArtifact()
     mc.finalize_and_certify(
@@ -124,6 +139,7 @@ def main():
         job_id,
         args.model_template_id,
         all_metrics=all_metrics,
+        indispensability_metrics=indisp_metrics,
     )
     print(f"{GREEN}Reported metrics to backend and certified results.{RESET}")
 

@@ -37,7 +37,7 @@ Before starting a job in the UI:
 
 import os, sys, json, datetime, argparse, time
 import math
-from ephapsys.modulation import ModulatorClient
+from ephapsys.modulation import ModulatorClient, compute_indispensability_loss, run_ablation_probe
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -378,10 +378,31 @@ def main():
     if not variant:
         raise ValueError("Trainer requires 'variant' in recipe (additive or multiplicative).")
 
+    # --- Governance mode and indispensability config ---
+    governance_mode = recipe.get("governance_mode", "standard")
+    indisp_cfg = recipe.get("indispensability") or {}
+    # Also check Modulation block (set by backend during /start)
+    mod_block = tpl.get("Modulation") or {}
+    if not indisp_cfg and mod_block.get("indispensability"):
+        indisp_cfg = mod_block["indispensability"]
+    if not governance_mode or governance_mode == "standard":
+        governance_mode = mod_block.get("governance_mode", "standard")
+
+    is_indispensable = governance_mode == "indispensable" or indisp_cfg.get("enabled", False)
+    indisp_alpha = float(indisp_cfg.get("alpha", 10.0))
+    indisp_beta = float(indisp_cfg.get("beta", 0.01))
+    indisp_joint = bool(indisp_cfg.get("joint_training", True))
+    indisp_min_steps = int(indisp_cfg.get("min_steps", 1000))
+
     phase("Modulation job")
     print(f"  {DIM}Job ID:    {job_id}{RESET}")
     print(f"  {DIM}Mode:      {mode} | Variant: {variant} | Steps: {steps}{RESET}")
     print(f"  {DIM}Dataset:   {ds_name}/{ds_config}/{ds_split}{RESET}")
+    if is_indispensable:
+        print(f"  {BOLD}\033[91m>>{RESET} {BOLD}INDISPENSABLE MODE{RESET} "
+              f"(alpha={indisp_alpha}, beta={indisp_beta}, joint={indisp_joint}, min_steps={indisp_min_steps})")
+    else:
+        print(f"  {DIM}Governance: {governance_mode}{RESET}")
 
     # --- Initialize baseline placeholders to avoid UnboundLocalError ---
     baseline_metrics, baseline_stream = {}, []
@@ -494,8 +515,19 @@ def main():
                 acc = (correct / total) if total > 0 else 0.0
                 ppl = math.exp(loss.item())
 
+                # --- Indispensable mode: use Family D loss ---
+                if is_indispensable and step_idx >= indisp_min_steps:
+                    indisp_result = compute_indispensability_loss(
+                        model, inputs, alpha=indisp_alpha, beta=indisp_beta,
+                    )
+                    final_loss = indisp_result["total_loss"]
+                    indisp_val = indisp_result["indispensability_loss"].item()
+                else:
+                    final_loss = loss
+                    indisp_val = None
+
                 optimizer.zero_grad()
-                loss.backward()
+                final_loss.backward()
                 optimizer.step()
 
                 metric = {
@@ -505,14 +537,17 @@ def main():
                     "loss": float(loss.item()),
                     "perplexity": float(ppl),
                 }
+                if indisp_val is not None:
+                    metric["indispensability"] = float(indisp_val)
                 metrics_stream.append(metric)
 
                 # Live inline progress (colored, same line)
                 acc_color = GREEN if acc >= 0.5 else YELLOW
                 loss_color = "\033[91m" if loss.item() > 5 else GREEN  # red if high loss
+                indisp_str = f" | indisp={indisp_val:.4f}" if indisp_val is not None else ""
                 sys.stdout.write(
                     f"\r{YELLOW}[MANUAL]{RESET} {GREEN}Step {step_idx + 1:03d}/{steps}{RESET} "
-                    f"| acc={acc_color}{acc:.4f}{RESET} | loss={loss_color}{loss.item():.4f}{RESET} | ppl={ppl:.2f}   "
+                    f"| acc={acc_color}{acc:.4f}{RESET} | loss={loss_color}{loss.item():.4f}{RESET} | ppl={ppl:.2f}{indisp_str}   "
                 )
                 sys.stdout.flush()
 
@@ -522,9 +557,12 @@ def main():
                     sys.stdout.write("\n")
 
                 # stream live to AOC
+                report = {"accuracy": acc, "loss": loss.item(), "perplexity": ppl}
+                if indisp_val is not None:
+                    report["indispensability"] = indisp_val
                 mc._report_model_metrics(
                     args.model_template_id,
-                    {"accuracy": acc, "loss": loss.item(), "perplexity": ppl},
+                    report,
                     step=step_idx + 1,
                 )
 
@@ -601,6 +639,23 @@ def main():
             if k in last:
                 mc._report_model_metrics(args.model_template_id, {k: last[k]}, step=steps)
 
+        # --- Run ablation probe if indispensable mode ---
+        indisp_metrics = None
+        if is_indispensable:
+            phase("Ablation probe (indispensability)")
+            probe_inputs = tokenizer(
+                "What is your name?", return_tensors="pt", truncation=True, max_length=64
+            ).to(device)
+            probe_inputs["labels"] = probe_inputs["input_ids"].clone()
+            indisp_metrics = run_ablation_probe(model, probe_inputs, tokenizer)
+            strength = indisp_metrics.get("governance_strength", "unknown")
+            sep = indisp_metrics.get("separation_ratio", 0)
+            print(f"  {BOLD}Governance Strength: {strength.upper()}{RESET}")
+            print(f"  Authorized PPL:   {indisp_metrics.get('authorized_ppl')}")
+            print(f"  Unauthorized PPL: {indisp_metrics.get('unauthorized_ppl')}")
+            print(f"  Separation:       {sep}x")
+            print(f"  KL Divergence:    {indisp_metrics.get('kl_divergence')}")
+
         mc.finalize_and_certify(
             run_dir,
             model,
@@ -612,6 +667,7 @@ def main():
             all_metrics=metrics_stream,  # ✅ include per-step data for PNG/CSV
             baseline_metrics=baseline_metrics,  # ✅ include comparison table
             exp_config={**trial_cfg, "runtime": total_runtime},  # ✅ pass ephaptic config + runtime
+            indispensability_metrics=indisp_metrics,
         )
         print(f"[INFO] Reports saved under: {run_dir}")
         print("[DONE] Manual mode finished successfully.")
@@ -706,8 +762,19 @@ def main():
                     acc = (correct / total) if total > 0 else 0.0
                     ppl = math.exp(loss.item())
 
+                    # --- Indispensable mode: use Family D loss ---
+                    if is_indispensable and step_idx >= indisp_min_steps:
+                        indisp_result = compute_indispensability_loss(
+                            model_trial, inputs, alpha=indisp_alpha, beta=indisp_beta,
+                        )
+                        final_loss = indisp_result["total_loss"]
+                        indisp_val = indisp_result["indispensability_loss"].item()
+                    else:
+                        final_loss = loss
+                        indisp_val = None
+
                     optimizer.zero_grad()
-                    loss.backward()
+                    final_loss.backward()
                     optimizer.step()
 
                     metric = {
@@ -717,14 +784,17 @@ def main():
                         "loss": float(loss.item()),
                         "perplexity": float(ppl),
                     }
+                    if indisp_val is not None:
+                        metric["indispensability"] = float(indisp_val)
                     metrics_stream.append(metric)
 
                     # Live inline colored progress (single line)
                     acc_color = GREEN if acc >= 0.5 else YELLOW
                     loss_color = "\033[91m" if loss.item() > 5 else GREEN
+                    indisp_str = f" | indisp={indisp_val:.4f}" if indisp_val is not None else ""
                     sys.stdout.write(
                         f"\r{YELLOW}[TRIAL {trial_num}/{budget}] {GREEN}Step {step_idx + 1:03d}/{steps}{RESET} "
-                        f"| acc={acc_color}{acc:.4f}{RESET} | loss={loss_color}{loss.item():.4f}{RESET} | ppl={ppl:.2f}   "
+                        f"| acc={acc_color}{acc:.4f}{RESET} | loss={loss_color}{loss.item():.4f}{RESET} | ppl={ppl:.2f}{indisp_str}   "
                     )
                     sys.stdout.flush()
 
@@ -733,9 +803,12 @@ def main():
                         sys.stdout.write("\n")
 
                     # stream live to AOC
+                    report = {"accuracy": acc, "loss": loss.item(), "perplexity": ppl}
+                    if indisp_val is not None:
+                        report["indispensability"] = indisp_val
                     mc._report_model_metrics(
                         args.model_template_id,
-                        {"accuracy": acc, "loss": loss.item(), "perplexity": ppl},
+                        report,
                         step=step_idx + 1,
                     )
 
@@ -840,6 +913,23 @@ def main():
                 if k in best_metrics:
                     mc._report_model_metrics(args.model_template_id, {k: best_metrics[k]}, step=steps)
 
+            # --- Run ablation probe if indispensable mode ---
+            indisp_metrics = None
+            if is_indispensable:
+                phase("Ablation probe (indispensability)")
+                probe_inputs = tokenizer(
+                    "What is your name?", return_tensors="pt", truncation=True, max_length=64
+                ).to(device)
+                probe_inputs["labels"] = probe_inputs["input_ids"].clone()
+                indisp_metrics = run_ablation_probe(model, probe_inputs, tokenizer)
+                strength = indisp_metrics.get("governance_strength", "unknown")
+                sep = indisp_metrics.get("separation_ratio", 0)
+                print(f"  {BOLD}Governance Strength: {strength.upper()}{RESET}")
+                print(f"  Authorized PPL:   {indisp_metrics.get('authorized_ppl')}")
+                print(f"  Unauthorized PPL: {indisp_metrics.get('unauthorized_ppl')}")
+                print(f"  Separation:       {sep}x")
+                print(f"  KL Divergence:    {indisp_metrics.get('kl_divergence')}")
+
             mc.finalize_and_certify(
                 run_dir,
                 model,            # keep main model artifact; Λ digests are uploaded separately
@@ -851,6 +941,7 @@ def main():
                 all_metrics=best_stream,
                 baseline_metrics=baseline_metrics,
                 exp_config=exp_cfg,
+                indispensability_metrics=indisp_metrics,
             )
 
             summary["best_variant"] = exp_cfg  # keep summary.json consistent
