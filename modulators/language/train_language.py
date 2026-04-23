@@ -459,7 +459,9 @@ def main():
 
         metrics_stream = []
 
-        if args.train:
+        # Indispensable mode forces training — ECM must become load-bearing.
+        use_training = args.train or is_indispensable
+        if use_training:
             # --- Optimizer + (optional) loss (seq2seq uses model.loss; causal uses CE through labels) ---
             print("[TRAIN] Training enabled in manual mode — running gradient updates per step.")
             ds, sample_at = build_training_ds(ds_name, ds_config, ds_split)
@@ -697,7 +699,9 @@ def main():
 
             # For training-enabled trials, we can (optionally) isolate updates by copying the model.
             # This avoids cross-trial contamination of weights.
-            model_trial = deepcopy(model) if args.train else model
+            # Indispensable mode forces training — ECM must become load-bearing.
+            use_training = args.train or is_indispensable
+            model_trial = deepcopy(model) if use_training else model
             encoder_trial = model_trial.get_encoder() if is_seq2seq else model_trial
 
             # Inspect Λ before modulation/training
@@ -705,7 +709,7 @@ def main():
 
             metrics_stream = []
 
-            if args.train:
+            if use_training:
                 # --- Show how many trials we expect overall (once, before the first) ---
                 if trial_num == 1:
                     print(f"{YELLOW}[INFO] Preparing to run {budget} ephaptic trials (auto mode){RESET}")
