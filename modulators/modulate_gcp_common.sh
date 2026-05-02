@@ -103,23 +103,20 @@ if [ -z "$BASE_URL" ] || [ -z "$AOC_ORG_ID" ] || [ -z "$AOC_MODULATION_TOKEN" ] 
   exit 1
 fi
 
+# Default: install LATEST published version from PyPI on the worker.
+# Experiments must be reproducible across machines, so we deliberately
+# do NOT auto-detect from the local install (that pinned reproducibility
+# to whatever version happened to be sitting in the user's venv).
+# Same fix applied to modulate_lambda_common.sh on 2026-04-30.
+#
+# To pin a specific version (e.g. for paper-canonical reproduction),
+# set HELLOWORLD_SDK_VERSION in .env or export SDK_VERSION beforehand.
 SDK_PACKAGE_SOURCE="${MODULATOR_SDK_PACKAGE_SOURCE:-${SDK_PACKAGE_SOURCE:-pypi}}"
 SDK_VERSION="${HELLOWORLD_SDK_VERSION:-${SDK_VERSION:-}}"
-if [ -z "$SDK_VERSION" ]; then
-  SDK_VERSION="$(python3 -c 'import ephapsys; print(ephapsys.__version__)' 2>/dev/null || echo "")"
-fi
-if [ -z "$SDK_VERSION" ]; then
-  # Try the experiment venv
-  for venv_py in .venv/bin/python3 .venv-experiment/bin/python3; do
-    if [ -x "$venv_py" ]; then
-      SDK_VERSION="$("$venv_py" -c 'import ephapsys; print(ephapsys.__version__)' 2>/dev/null || echo "")"
-      [ -n "$SDK_VERSION" ] && break
-    fi
-  done
-fi
-if [ -z "$SDK_VERSION" ]; then
-  echo "❌ Unable to determine SDK version. Set HELLOWORLD_SDK_VERSION in .env or install ephapsys."
-  exit 1
+if [ -n "$SDK_VERSION" ]; then
+  echo "📦 SDK pinned to ephapsys==${SDK_VERSION} (via HELLOWORLD_SDK_VERSION/SDK_VERSION)"
+else
+  echo "📦 SDK: installing latest from PyPI on the worker (no version pin)"
 fi
 
 INSTANCE_NAME="ec-modulate-${MODULATOR_KIND}-$(date +%s)"
@@ -349,7 +346,7 @@ trap cleanup EXIT
 echo "☁️ GCP target: project=${PROJECT_ID} region=${REGION} zone=${ZONE}"
 echo "🧠 Remote modulation plan: kind=${MODULATOR_KIND} gpu=${GPU_CHOICE} instance=${INSTANCE_NAME}"
 echo "📦 VM-first path: samples are copied to the VM and the published SDK is installed there."
-echo "📦 Using SDK package source=${SDK_PACKAGE_SOURCE} version=${SDK_VERSION}"
+echo "📦 Using SDK package source=${SDK_PACKAGE_SOURCE} version=${SDK_VERSION:-<latest>}"
 if ! create_gpu_vm; then
   echo "❌ Unable to create a GPU VM for ${MODULATOR_KIND} in ${REGION}. Tried GPU_FALLBACKS=${GPU_FALLBACKS:-$GPU_CHOICE} and zones ${ZONE_FALLBACKS:-${REGION}-{a..f}}"
   exit 1
@@ -379,7 +376,7 @@ gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command "
 rm -rf "$TEMP_SRC"
 mkdir -p "$TEMP_SRC/common" "$TEMP_SRC/modulator"
 rsync -a --delete \
-  --exclude '.env' \
+  --exclude '.env*' \
   --exclude '.venv' \
   --exclude '__pycache__' \
   --exclude 'artifacts' \
@@ -412,12 +409,21 @@ source ~/.venvs/ephapsys-modulator/bin/activate
 python -m pip install --upgrade pip >/dev/null
 SETUP_EOF
 
+SDK_SPEC="ephapsys[modulation,audio,vision,embedding,eval]"
+[ -n "$SDK_VERSION" ] && SDK_SPEC="${SDK_SPEC}==${SDK_VERSION}"
+
 case "$SDK_PACKAGE_SOURCE_LC" in
   pypi)
-    echo "python -m pip install 'ephapsys[modulation,audio,vision,embedding,eval]==${SDK_VERSION}' >/dev/null" >> "$REMOTE_SETUP_SCRIPT"
+    echo "python -m pip install '${SDK_SPEC}' >/dev/null" >> "$REMOTE_SETUP_SCRIPT"
+    # Use importlib.metadata — SDK 0.2.79+ doesn't expose ephapsys.__version__
+    # directly. importlib.metadata works for any pip-installed package.
+    echo "python -c 'from importlib.metadata import version; print(\"  installed ephapsys\", version(\"ephapsys\"))'" >> "$REMOTE_SETUP_SCRIPT"
     ;;
   testpypi)
-    echo "python -m pip install --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple 'ephapsys[modulation,audio,vision,embedding,eval]==${SDK_VERSION}' >/dev/null" >> "$REMOTE_SETUP_SCRIPT"
+    echo "python -m pip install --extra-index-url https://pypi.org/simple --index-url https://test.pypi.org/simple '${SDK_SPEC}' >/dev/null" >> "$REMOTE_SETUP_SCRIPT"
+    # Use importlib.metadata — SDK 0.2.79+ doesn't expose ephapsys.__version__
+    # directly. importlib.metadata works for any pip-installed package.
+    echo "python -c 'from importlib.metadata import version; print(\"  installed ephapsys\", version(\"ephapsys\"))'" >> "$REMOTE_SETUP_SCRIPT"
     ;;
   *)
     echo "❌ Unsupported SDK package source for GCP modulation: $SDK_PACKAGE_SOURCE"

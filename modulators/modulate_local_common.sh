@@ -97,9 +97,27 @@ modulator_prepare_env() {
     fi
   fi
 
+  # Install torch with the cu124 wheel BEFORE the requirements.gcp.txt
+  # install — otherwise pip pulls torch's default cu126/cu128 wheel from
+  # PyPI (built against CUDA 12.6/12.8 toolkit), which silently falls back
+  # to CPU on Lambda Cloud's CUDA 12.0 driver. The cu124 wheel runs fine on
+  # the older driver. Symptom of the bug: A100 instance running training at
+  # ~20s/step instead of <1s/step (full Phase 1 = 30+ hours = $60+ wasted).
+  # See modulate_lambda_common.sh which uses the same pin in its outer venv.
+  if ! python3 -c "import torch; assert '+cu124' in torch.__version__ or torch.cuda.is_available()" 2>/dev/null; then
+    modulator_info "Installing torch==2.6.0+cu124 (matches Lambda Stack's CUDA 12.x driver)"
+    PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install \
+      torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124 --quiet
+  fi
+
   if [ -f "$MODULATOR_COMMON_DIR/requirements.gcp.txt" ]; then
     modulator_info "Syncing shared modulator requirements into $venv"
     PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install -r "$MODULATOR_COMMON_DIR/requirements.gcp.txt" --quiet
+  fi
+
+  # Sanity check: warn if CUDA isn't actually working after install
+  if ! python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+    modulator_info "WARNING: torch.cuda.is_available() = False — training will run on CPU (~20× slower than GPU). Check NVIDIA driver compatibility with the installed torch wheel."
   fi
 
   if [ -f "requirements.txt" ]; then
