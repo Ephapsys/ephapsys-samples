@@ -287,6 +287,30 @@ def main():
         max_steps_per_trial = int(os.getenv("AOC_STEPS_PER_TRIAL", "10"))
         search_budget = int(os.getenv("AOC_SEARCH_BUDGET", "2"))
 
+        # Governance-mode-aware variant restriction.
+        # The SDK's start_job() doesn't currently carry governance_mode to AOC
+        # (only variant + search + kpi + mode), so we can't tell the backend
+        # which mode we require. As a worker-side workaround, we read the
+        # operator's intent from AOC_GOVERNANCE_MODE and tailor the search
+        # space locally. When indispensability is required, additive variant
+        # is removed from the search because additive's `y = f(S + ε·φ(Λ·x))`
+        # makes W's gradient INDEPENDENT of Λ — empirically every additive
+        # trial produces a model where Λ is decorative and 0/3 adversaries
+        # can be blocked. Multiplicative `y = f(S · (1 + ε·φ(Λ·x)))` scales
+        # W's gradient by (1 + ε·φ(Λ·x)) which forces W↔Λ coupling — the
+        # mathematical foundation of indispensability. For governance="standard"
+        # (no indispensability requirement), both variants stay searchable
+        # because additive is still a valid governance signaling mechanism.
+        gov_mode = os.getenv("AOC_GOVERNANCE_MODE", "standard").lower().strip()
+        _indisp_modes = {"indispensable", "indispensability", "strict"}
+        if gov_mode in _indisp_modes:
+            _allowed_variants = ["multiplicative"]
+            print(f"[INFO] AOC_GOVERNANCE_MODE={gov_mode} → restricting variant search to multiplicative-only "
+                  "(additive is excluded because its W-gradient is independent of Λ → no indispensability)")
+        else:
+            _allowed_variants = ["additive", "multiplicative"]
+            print(f"[INFO] AOC_GOVERNANCE_MODE={gov_mode} → variant search includes both additive and multiplicative")
+
         kpi = {
             "targets": [
                 {"name": "accuracy", "direction": "max", "weight": 1},
@@ -296,22 +320,58 @@ def main():
             "maxSteps": max_steps_per_trial,
         }
 
+        # Search space includes the Family D indispensability hyperparameters
+        # (alpha, beta) — these were missed when indispensability training
+        # was integrated into the modulator. Without searching alpha/beta,
+        # AOC could only optimize the *shape* of Λ (variant/ε/λ₀/φ/init);
+        # the strength of the indispensability penalty stayed at whatever
+        # the model template said (default 10.0), causing the held-out PPL
+        # collapse documented in the security paper EXPERIMENTS.md.
+        #
+        # alpha range chosen to span "almost no penalty" (0.5) → "very
+        # aggressive" (20). The paper §5.6.4 ran α=10 and got severe
+        # held-out collapse; AOC should now find a softer point.
+        # beta range stays small — it's the stability term, doesn't need
+        # wide exploration.
         search = {
             "algo": "bayes",
             "budget": search_budget,
             "parallel": 1,
             "multi_objective": True,
             "space": {
-                "epsilon": {"low": 0.0, "high": 2.0},
-                "lambda0": {"low": 0.0, "high": 0.5},
+                # Continuous ranges anchored to the canonical paper values
+                # (ε=0.5, λ₀=0.2296, α=10.0, β=0.01 from .env.experiment §5.6.4).
+                # Earlier ranges were guesses with ±1 order of magnitude headroom
+                # — empirically those let AOC converge to destructive regions:
+                #   α=18.8 + small ε → catastrophic over-specialization
+                #   β=0.001         → no Λ-norm constraint, no AOC signal anyway
+                #   ε=0.05–0.33     → decorative Λ, indispensability fails
+                # Tightened to ±50% around canonical, which keeps AOC inside
+                # the empirically-validated sweet spot while still letting it
+                # find better-than-canonical configurations.
+                "epsilon": {"low": 0.3, "high": 0.8},   # was [0.0, 2.0]; canonical 0.5
+                "lambda0": {"low": 0.1, "high": 0.4},   # was [0.0, 0.5]; canonical 0.2296
                 "phi": ["identity", "relu", "tanh", "silu", "gelu"],
                 "ecm_init": ["transpose", "identity", "random"],
-                "variant": ["additive", "multiplicative"],
+                # Variant set is governance-mode-dependent (see _allowed_variants
+                # logic above): multiplicative-only when AOC_GOVERNANCE_MODE
+                # requires indispensability, both variants otherwise.
+                "variant": _allowed_variants,
+                "alpha": {"low": 5.0, "high": 15.0},    # was [0.5, 20.0]; canonical 10.0
+                "beta":  {"low": 0.005, "high": 0.02},  # was [0.001, 0.1]; canonical 0.01
             },
         }
 
         # --- Start a fresh job ---
         # NOTE: mode is an AOC/UI concept (manual vs auto). Training is now a *flag* here, not a mode.
+        # governance_mode (added in SDK 0.2.80) carries operator intent to
+        # the backend, which then coerces the search space accordingly:
+        #   "indispensable" → backend restricts variant→multiplicative,
+        #                     ecm_init excludes random, ε∈[0.3,0.8]
+        #   "standard"      → no extra constraints (backend pass-through)
+        # Reading from AOC_GOVERNANCE_MODE env (same source the local
+        # search-space restriction logic uses above) keeps both layers
+        # consistent.
         mc.start_job(
             args.model_template_id,
             variant="additive",
@@ -319,6 +379,7 @@ def main():
             mode="auto",  # carry search behavior; training is controlled locally by --train
             dataset=dataset,
             search=search,
+            governance_mode=gov_mode,
         )
     else:
         print("[INFO] AUTO_START=0 → skipping /modulation/start, waiting for UI job...")
@@ -369,6 +430,25 @@ def main():
     ds_kind = dataset_cfg.get("kind", "repo")
     ds_path = dataset_cfg.get("path", "")
     ds_name, ds_config, ds_split = dataset_cfg.get("name"), dataset_cfg.get("config"), dataset_cfg.get("split")
+
+    # AOC_DATASET_PATH env var WINS over whatever dataset config is baked
+    # into the AOC model template. Reason: model templates accumulate
+    # stale dataset references across runs (e.g. /tmp/identity_dataset.jsonl
+    # registered from a previous worker that no longer exists), and re-
+    # registering the template just to update one field is heavy. The env
+    # override lets the caller (e.g. run_experiment.sh's Phase 0) point
+    # the trial at whatever local JSONL got uploaded to the current worker.
+    env_ds_path = os.getenv("AOC_DATASET_PATH", "").strip()
+    if env_ds_path:
+        if env_ds_path != ds_path:
+            print(f"[INFO] AOC_DATASET_PATH env override: "
+                  f"template={ds_path or '(none)'} → env={env_ds_path}")
+        ds_path = env_ds_path
+        ds_kind = "file"
+        ds_name = None
+        ds_config = None
+        ds_split = None
+
     # For file-based datasets, use the path as the name for load_dataset("json", ...)
     if ds_kind == "file" and ds_path:
         ds_name = ds_path
@@ -697,6 +777,15 @@ def main():
             trial_num += 1
             print(f"\n[TRIAL {trial_num}/{budget}] Config → {trial_cfg}")
 
+            # Per-trial Family D hyperparameters: AOC may now propose alpha/beta
+            # in trial_cfg (search space added 2026-04-30). Fall back to the
+            # template-level indisp_cfg defaults if AOC didn't return them
+            # (e.g. older AOC backends or when these fields aren't in the space).
+            trial_alpha = float(trial_cfg.get("alpha", indisp_alpha))
+            trial_beta  = float(trial_cfg.get("beta",  indisp_beta))
+            if "alpha" in trial_cfg or "beta" in trial_cfg:
+                print(f"  {DIM}[INDISP] trial α={trial_alpha} β={trial_beta} (AOC-proposed){RESET}")
+
             # For training-enabled trials, we can (optionally) isolate updates by copying the model.
             # This avoids cross-trial contamination of weights.
             # Indispensable mode forces training — ECM must become load-bearing.
@@ -768,8 +857,10 @@ def main():
 
                     # --- Indispensable mode: use Family D loss ---
                     if is_indispensable and step_idx >= indisp_min_steps:
+                        # trial_alpha/trial_beta carry AOC's per-trial proposal
+                        # (or fall back to indisp_alpha/indisp_beta defaults).
                         indisp_result = compute_indispensability_loss(
-                            model_trial, inputs, alpha=indisp_alpha, beta=indisp_beta,
+                            model_trial, inputs, alpha=trial_alpha, beta=trial_beta,
                         )
                         final_loss = indisp_result["total_loss"]
                         indisp_val = indisp_result["indispensability_loss"].item()
@@ -865,9 +956,149 @@ def main():
                 print(f"[ΔΛ] Change during trial {trial_num}: {delta:.6f}")
 
             last = metrics_stream[-1] if metrics_stream else {}
-            score = last.get("accuracy", 0.0) - last.get("loss", 0.0)
+
+            # ── Held-out evaluation (was: in-distribution score) ─────
+            # Originally the trial score was computed from the LAST training-
+            # stream metric, i.e. on the same WikiText slice the model just
+            # trained on. That rewarded configurations that memorize the
+            # training set and silently penalized ones that preserved general
+            # language ability — the exact failure mode that produced the
+            # ε=0.5/α=10 hyperparameters which collapsed authorized PPL on
+            # held-out WikiText to 488,917 (vs vanilla 31). See security paper
+            # EXPERIMENTS.md for context.
+            #
+            # Now we evaluate on the held-out test split (test[:200] for
+            # wikitext, otherwise the configured split with a small step
+            # budget) and report THAT to AOC. AOC's Bayesian search will then
+            # converge toward configurations that generalize, not overfit.
+            #
+            # If the held-out eval fails for any reason, fall back to the
+            # original behavior so the trial still reports something rather
+            # than crashing the search loop.
+            # Anchor held-out on WikiText test regardless of what training
+            # data was used. This gives a *generalization* signal that's
+            # invariant to the (possibly narrow) task-specific training set.
+            # Configurations that memorize the training data will look great
+            # on the in-distribution training stream but blow up on this
+            # held-out PPL — exactly the failure mode we want AOC to avoid.
+            held_out_ds_name   = "wikitext"
+            held_out_ds_config = "wikitext-103-raw-v1"
+            held_out_split     = "test[:200]"
+            held_out_steps     = 20  # quick — ~30 sec extra per trial
+            held_out_last = None
+            try:
+                held_out_stream = []
+                for upd in mc.compute_language_metrics_stream(
+                    model_trial, tokenizer, args.model_template_id,
+                    ds_name=held_out_ds_name, ds_config=held_out_ds_config,
+                    ds_split=held_out_split, steps=held_out_steps,
+                ):
+                    held_out_stream.append(upd)
+                if held_out_stream:
+                    held_out_last = held_out_stream[-1]
+                    last["held_out_loss"] = held_out_last.get("loss")
+                    last["held_out_perplexity"] = held_out_last.get("perplexity")
+                    last["held_out_accuracy"] = held_out_last.get("accuracy")
+            except Exception as e:
+                print(f"[WARN] held-out eval failed ({e}); falling back to in-distribution score")
+
+            # ── Indispensability eval: re-evaluate the trial with Λ zeroed ──
+            # The previous scoring (held-out PPL only) is anti-correlated
+            # with indispensability: small ε produces minimal perturbation,
+            # cleanest held-out PPL, AOC scores it best — but Λ is decorative
+            # and adversaries trivially recover the trained behavior. We saw
+            # this empirically across multiple AOC runs (Apr 30 / May 1):
+            # AOC selected ε≈0.05–0.33 → 0/3 adversaries blocked. Hand-tuned
+            # ε=0.5 → 2/3 blocked with 12-orders-of-magnitude PPL gap.
+            #
+            # Fix: run held-out eval a SECOND time with Λ zeroed, compute
+            # the loss gap, and add it to the score. AOC will then prefer
+            # configurations where (a) the model works with Λ AND (b) the
+            # model breaks without Λ — i.e., Λ is genuinely load-bearing.
+            #
+            # Math check: Λ=0 reduces both variants to W-only:
+            #   multiplicative: f(S · (1 + ε·φ(0))) = f(S · 1) = f(S)
+            #   additive:       f(S + ε·φ(0))      = f(S + 0) = f(S)
+            # So zero-Λ is functionally equivalent to ECM-removed.
+            held_out_no_lambda_last = None
+            saved_lambda = {}
+            try:
+                for name, param in model_trial.named_parameters():
+                    if "lambda_ecm" in name:
+                        saved_lambda[name] = param.data.clone()
+                        param.data.zero_()
+                if saved_lambda:
+                    nl_stream = []
+                    for upd in mc.compute_language_metrics_stream(
+                        model_trial, tokenizer, args.model_template_id,
+                        ds_name=held_out_ds_name, ds_config=held_out_ds_config,
+                        ds_split=held_out_split, steps=held_out_steps,
+                    ):
+                        nl_stream.append(upd)
+                    if nl_stream:
+                        held_out_no_lambda_last = nl_stream[-1]
+                        last["nolambda_loss"] = held_out_no_lambda_last.get("loss")
+                        last["nolambda_perplexity"] = held_out_no_lambda_last.get("perplexity")
+            except Exception as e:
+                print(f"[WARN] zero-Λ eval failed ({e}); indispensability gap unavailable")
+            finally:
+                # Always restore Λ — even if the eval crashed, the trial's
+                # original Λ values must come back so subsequent trials and
+                # the final report see the trained tensor, not zeros.
+                for name, param in model_trial.named_parameters():
+                    if name in saved_lambda:
+                        param.data.copy_(saved_lambda[name])
+
+            if held_out_last is not None:
+                # Held-out score: same accuracy-minus-loss form, but on text
+                # the trial never trained on. Higher = better generalization.
+                base_score = held_out_last.get("accuracy", 0.0) - held_out_last.get("loss", 0.0)
+
+                # Indispensability bonus: how much worse is the model without Λ?
+                # Positive = Λ contributes; negative = Λ is harmful.
+                # Combined: AOC picks configs that maximize
+                #   (acc_with − loss_with) + α·(loss_without − loss_with)
+                # which expands to acc_with − (1+α)·loss_with + α·loss_without
+                # — naturally double-weights "model works with Λ" while still
+                # rewarding "model breaks without Λ". α is configurable so we
+                # can tune the trade-off without code changes.
+                indisp_gap = 0.0
+                if held_out_no_lambda_last is not None:
+                    loss_with = held_out_last.get("loss", 0.0)
+                    loss_without = held_out_no_lambda_last.get("loss", 0.0)
+                    indisp_gap = loss_without - loss_with
+                    last["indispensability_gap"] = indisp_gap
+                alpha_indisp = float(os.getenv("AOC_INDISPENSABILITY_WEIGHT", "1.0"))
+                score = base_score + alpha_indisp * indisp_gap
+                score_source = "held_out+indispensability" if held_out_no_lambda_last is not None else "held_out"
+            else:
+                score = last.get("accuracy", 0.0) - last.get("loss", 0.0)
+                score_source = "in_distribution_fallback"
+
+            # Sanitize NaN/Inf before reporting to AOC. Random-init Λ at high
+            # norms can diverge during training (loss → NaN); the SDK's
+            # report_metrics() then fails JSON serialization, which the SDK's
+            # auto-mode loop treats as a fatal error and exits — losing the
+            # rest of the search budget. Convert NaN/Inf to a "very bad"
+            # finite score so AOC's Bayesian prior learns to avoid that
+            # region and the loop continues. See ephapsys-research#6.
+            NAN_SENTINEL_SCORE = -1e9
+            def _sanitize(v):
+                if v is None:
+                    return v
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    return NAN_SENTINEL_SCORE
+                return v
+            trial_was_nan = False
+            if isinstance(score, float) and (math.isnan(score) or math.isinf(score)):
+                trial_was_nan = True
+                score = NAN_SENTINEL_SCORE
+            last = {k: _sanitize(v) for k, v in last.items()}
+            if trial_was_nan:
+                print(f"{YELLOW}[WARN] Trial {trial_num}/{budget} produced NaN/Inf — sanitized to score={NAN_SENTINEL_SCORE} so AOC can continue. Config: {trial_cfg}{RESET}")
+
             last_cfg, last_score = trial_cfg, score
-            print(f"[RESULT] Trial {trial_num}/{budget} score={score:.3f}, metrics={last}")
+            print(f"[RESULT] Trial {trial_num}/{budget} score={score:.3f} ({score_source}), metrics={last}")
 
             if best_score is None or score > best_score:
                 best_score, best_metrics, best_variant = score, last, trial_cfg
@@ -891,6 +1122,13 @@ def main():
                 "runtime": total_runtime,
                 "maxSteps": steps,
             }
+            # Family D hyperparameters added to AOC search 2026-04-30. Persist
+            # them in the summary when present so the security paper's Phase 0
+            # parser can pick them up alongside (variant, ε, λ₀, φ, init).
+            if "alpha" in best_variant:
+                exp_cfg["alpha"] = float(best_variant.get("alpha"))
+            if "beta" in best_variant:
+                exp_cfg["beta"] = float(best_variant.get("beta"))
             print(f"[INFO] Final exp_config for report: {json.dumps(exp_cfg, indent=2)}")
 
             # Normalize naming for report compatibility
