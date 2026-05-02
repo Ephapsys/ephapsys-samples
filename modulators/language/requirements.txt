@@ -14,6 +14,15 @@ matplotlib>=3.8.0
 python-docx>=1.1.0
 pillow>=10.3.0
 seaborn>=0.13.0
+# ROUGE/BLEU/etc — required by `evaluate` for the language-quality metrics
+# AOC trial reporting computes. Without these, every trial spams ~10 [WARN]
+# lines per eval ("To be able to use evaluate-metric/rouge, you need to
+# install rouge_score absl nltk") which clutters logs and forces those
+# metrics to 0.0 in the output.
+rouge_score>=0.1.2
+absl-py>=2.1.0
+nltk>=3.9.0
+bert_score>=0.3.13
 
 # Utilities
 numpy>=1.26.0

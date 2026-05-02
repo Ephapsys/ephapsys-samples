@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-USAGE="Usage: $0 [--mode local|gcp] [--gpu t4|a100|a100-2g|a100-4g|a100-8g] [--no-idempotent] [--force-modulate] [--label LABEL]"
+USAGE="Usage: $0 [--mode local|gcp|lambda] [--gpu t4|a100|a100-2g|a100-4g|a100-8g] [--no-idempotent] [--force-modulate] [--label LABEL]"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LANG_DIR="$SCRIPT_DIR/../../modulators/language"
@@ -62,8 +62,17 @@ while [[ $# -gt 0 ]]; do
       MODE="gcp"
       shift
       ;;
+    --lambda)
+      MODE="lambda"
+      shift
+      ;;
     --gpu)
-      MODE="gcp"
+      # --gpu only matters for GCP (Lambda picks via LAMBDA_INSTANCE_TYPES env);
+      # historically this also implicitly switched MODE to gcp. Preserve that
+      # behavior for the GCP case but don't override an explicit --lambda.
+      if [ "$MODE" != "lambda" ]; then
+        MODE="gcp"
+      fi
       GPU="$2"
       shift 2
       ;;
@@ -108,9 +117,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-  local|gcp) ;;
+  local|gcp|lambda) ;;
   *)
-    error "--mode must be one of: local, gcp"
+    error "--mode must be one of: local, gcp, lambda"
     exit 1
     ;;
 esac
@@ -132,6 +141,13 @@ fi
 
 set -a
 source "$ENV_FILE"
+# Provider-specific env (LAMBDA_API_KEY, LAMBDA_SSH_*, etc.) lives in
+# .env.lambda — same pattern as GCP utility scripts use .env.gcp. Sourced
+# only when --mode lambda is selected so users running --mode local|gcp
+# aren't required to set up Lambda creds.
+if [[ "$MODE" == "lambda" && -f "$SCRIPT_DIR/.env.lambda" ]]; then
+  source "$SCRIPT_DIR/.env.lambda"
+fi
 set +a
 
 AOC_API="${AOC_BASE_URL:-${AOC_API_URL:-${AOC_API_BASE:-${AOC_API:-http://localhost:7001}}}}"
@@ -398,6 +414,14 @@ poll_until_ready() {
   local -a spinner=('|' '/' '-' '\\')
   local spin_idx=0
   step "Waiting for model template ${model_id} to become ready"
+  # Bound consecutive malformed-response failures so a broken backend
+  # doesn't cause an infinite spin. See ephapsys-research#7. Without this
+  # cap, a 502/504/HTML-error-page response from the API caused a 2.5+ min
+  # silent hang on 2026-05-01 with the operator unable to tell what went
+  # wrong from the repeated "jq: parse error" lines.
+  local parse_failures=0
+  local last_raw_response=""
+  local MAX_PARSE_FAILURES=10
   while true; do
     if model_ready "$model_id"; then
       local elapsed=$(( $(date +%s) - started ))
@@ -410,14 +434,34 @@ poll_until_ready() {
       error "Timed out waiting for model template ${model_id} to become ready"
       return 1
     fi
+    local raw_response
+    raw_response="$(curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/models/${model_id}" 2>/dev/null || true)"
+    last_raw_response="$raw_response"
     local status_line
-    status_line="$(curl -sS "${AUTH_HEADER[@]}" "${AOC_API}/models/${model_id}" | jq -r '
-      [
-        ("status=" + ((.Modulation.status // .status // "unknown") | tostring)),
-        ("modulated=" + (((.Modulated // false) | tostring))),
-        ("artifacts=" + (((((.artifact_urls // {}) | length) + ((.Modulation.artifact_urls // {}) | length))) | tostring))
-      ] | join(", ")
-    ' 2>/dev/null || printf 'status=unknown')"
+    if echo "$raw_response" | jq -e . >/dev/null 2>&1; then
+      # Valid JSON — reset failure counter and extract status fields
+      parse_failures=0
+      status_line="$(echo "$raw_response" | jq -r '
+        [
+          ("status=" + ((.Modulation.status // .status // "unknown") | tostring)),
+          ("modulated=" + (((.Modulated // false) | tostring))),
+          ("artifacts=" + (((((.artifact_urls // {}) | length) + ((.Modulation.artifact_urls // {}) | length))) | tostring))
+        ] | join(", ")
+      ' 2>/dev/null || printf 'status=unknown')"
+    else
+      # Malformed response — track and bail loud after MAX_PARSE_FAILURES
+      parse_failures=$(( parse_failures + 1 ))
+      status_line="status=malformed_response (${parse_failures}/${MAX_PARSE_FAILURES})"
+      if (( parse_failures >= MAX_PARSE_FAILURES )); then
+        progress_done
+        error "AOC backend returned malformed response ${MAX_PARSE_FAILURES} polls in a row."
+        error "Last raw response (first 500 chars):"
+        printf '%s\n' "${last_raw_response:0:500}" | sed 's/^/    /'
+        error "Likely a 502/504 from the load balancer or an unhandled backend exception."
+        error "Check AOC backend health: ${AOC_API}/health (if available)"
+        return 1
+      fi
+    fi
     local elapsed=$(( $(date +%s) - started ))
     progress "${spinner[$spin_idx]} ${elapsed}s  ${status_line}"
     spin_idx=$(( (spin_idx + 1) % ${#spinner[@]} ))
@@ -450,6 +494,13 @@ cleanup_mod_env() {
 }
 
 prepare_modulator_env() {
+  # Sweep stale backups left over from interrupted prior runs (Ctrl-C
+  # while modulation was in flight skips the RETURN trap, leaving the
+  # .bak.push.<PID> file behind with credentials in it). These were
+  # also being rsynced to remote workers — defense-in-depth fix added
+  # 2026-04-30: also exclude .env* in modulate_*_common.sh rsync.
+  rm -f "$LANG_DIR"/.env.bak.push.* 2>/dev/null || true
+
   if [[ -f "$LANG_DIR/.env" ]]; then
     MOD_ENV_BACKUP="$LANG_DIR/.env.bak.push.$$"
     cp "$LANG_DIR/.env" "$MOD_ENV_BACKUP"
@@ -465,26 +516,50 @@ MODULATOR_SDK_PACKAGE_SOURCE=${HELLOWORLD_SDK_PACKAGE_SOURCE:-${SDK_PACKAGE_SOUR
 MODULATOR_SDK_VERSION=${HELLOWORLD_SDK_VERSION:-${SDK_VERSION:-}}
 AOC_SEARCH_BUDGET=${AOC_SEARCH_BUDGET:-2}
 AOC_STEPS_PER_TRIAL=${AOC_STEPS_PER_TRIAL:-10}
+# Governance mode the worker should request from AOC. One of "standard"
+# (default — both ECM variants searchable, no constraints), "indispensable"
+# (backend coerces variant→multiplicative, ecm_init excludes random,
+# ε∈[0.3,0.8]), or "idempotent" (skip-modulation publish). Default
+# preserves backward-compatible behavior. Caller (e.g. run_experiment.sh)
+# can override by exporting AOC_GOVERNANCE_MODE before invoking push.sh.
+AOC_GOVERNANCE_MODE=${AOC_GOVERNANCE_MODE:-standard}
 AOC_DATASET_PATH=${AOC_DATASET_PATH:-}
 AOC_DATASET_NAME=${AOC_DATASET_NAME:-}
 AOC_DATASET_CONFIG=${AOC_DATASET_CONFIG:-}
 AOC_DATASET_SPLIT=${AOC_DATASET_SPLIT:-}
+LAMBDA_API_KEY=${LAMBDA_API_KEY:-}
+LAMBDA_SSH_KEY_NAME=${LAMBDA_SSH_KEY_NAME:-}
+LAMBDA_SSH_KEY_PATH=${LAMBDA_SSH_KEY_PATH:-}
+LAMBDA_INSTANCE_TYPES=${LAMBDA_INSTANCE_TYPES:-gpu_1x_a100,gpu_1x_a100_sxm4,gpu_1x_a10}
+LAMBDA_API_BASE=${LAMBDA_API_BASE:-https://cloud.lambdalabs.com/api/v1}
 EOF
 }
 
 run_modulation() {
-  trap cleanup_mod_env RETURN
+  # RETURN handles normal completion. EXIT/INT/TERM handle Ctrl-C and
+  # unexpected termination — without these, an interrupted run leaves a
+  # .bak.push.<PID> file in the modulator dir with AOC credentials.
+  trap cleanup_mod_env RETURN EXIT INT TERM
   prepare_modulator_env
   if [[ "$IDEMPOTENT" -eq 1 ]]; then
     trigger_idempotent_publish "$MODEL_TEMPLATE_ID"
   else
-    if [[ "$MODE" == "local" ]]; then
-      info "Running language modulation locally..."
-      (cd "$LANG_DIR" && ./modulate_local.sh)
-    else
-      info "Running language modulation on GCP (gpu=${GPU})..."
-      (cd "$LANG_DIR" && ./modulate_gcp.sh "$GPU" ${SKIP_BUILD_FLAG:+$SKIP_BUILD_FLAG} ${SKIP_PUSH_FLAG:+$SKIP_PUSH_FLAG})
-    fi
+    case "$MODE" in
+      local)
+        info "Running language modulation locally..."
+        (cd "$LANG_DIR" && ./modulate_local.sh)
+        ;;
+      lambda)
+        # Lambda picks GPU type via LAMBDA_INSTANCE_TYPES env var, not a CLI
+        # flag — the launcher tries each in order until one has capacity.
+        info "Running language modulation on Lambda Cloud..."
+        (cd "$LANG_DIR" && ./modulate_lambda.sh ${SKIP_BUILD_FLAG:+$SKIP_BUILD_FLAG} ${SKIP_PUSH_FLAG:+$SKIP_PUSH_FLAG})
+        ;;
+      gcp|*)
+        info "Running language modulation on GCP (gpu=${GPU})..."
+        (cd "$LANG_DIR" && ./modulate_gcp.sh "$GPU" ${SKIP_BUILD_FLAG:+$SKIP_BUILD_FLAG} ${SKIP_PUSH_FLAG:+$SKIP_PUSH_FLAG})
+        ;;
+    esac
   fi
   poll_until_ready "$MODEL_TEMPLATE_ID"
 }
