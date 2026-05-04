@@ -37,3 +37,7 @@ dist/
 .ephapsys_state/
 memory/
 *.env.bak.*
+agents/helloworld-a/
+agents/helloworld-b/
+agents/helloworld-c/
+modulators/language/.env~
