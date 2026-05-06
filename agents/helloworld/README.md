@@ -48,6 +48,13 @@ Populate `.env` with:
 
 Leave `MODEL_TEMPLATE_ID` and `AGENT_TEMPLATE_ID` blank on first run — `quickstart.sh` populates them.
 
+## Want to see the full A2A trust story?
+
+Once you have three personalized agents (`helloworld-a/-b/-c`), run
+`./demo/run.sh` for a guided five-scene walkthrough — basic chat,
+prompt serving with real inference, guardrail block, operator
+isolation, and the audit journal. See [demo/README.md](demo/README.md).
+
 ## Common Commands
 
 ```bash
