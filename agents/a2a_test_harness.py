@@ -171,8 +171,11 @@ def build_responder(state_root: Path, did_map: dict[str, str], is_driver: bool) 
     api_base = os.environ.get("AOC_BASE_URL") or ""
     if not api_base:
         raise SystemExit("AOC_BASE_URL not set — check your --env file")
+    # agent_id=raw (DID) so the SDK's per-agent cache key matches what
+    # TrustedAgent.from_env() uses in helloworld-*/a2a_peer.py and quickstart.sh.
+    # ref (public_id) is still used for messaging routing via Responder.ref.
     agent = TrustedAgent(
-        agent_id=ref,
+        agent_id=raw,
         api_base=api_base,
         storage_dir=str(state_root / ".ephapsys_state"),
         verify_ssl=os.environ.get("AOC_VERIFY_SSL", "1") != "0",
