@@ -55,6 +55,17 @@ wait_for_enter() {
   read -r _
 }
 
+# Close the loop after a tmux_send: tell the user what landed in the
+# agent panes and why it matters. First arg is a short title; remaining
+# args are bullet lines that describe what to look for.
+you_saw() {
+  local title="$1"; shift
+  printf "\n  ${GREEN}━ You just saw ━${RESET}  ${BOLD}%s${RESET}\n" "$title"
+  for line in "$@"; do
+    printf "    ${DIM}•${RESET} %b\n" "$line"
+  done
+}
+
 # ── tmux helpers ────────────────────────────────────────────────
 # Pane indices set by run_tmux_mode after the splits:
 #   PANE_A=0  top-left
@@ -114,6 +125,52 @@ agent_did() {
   cat "$dir/.ephapsys_state/agent_id"
 }
 
+# Poll Agent B's tmux pane until a2a_peer.py prints the eager-load
+# sentinel "[ready: model in GPU]". Times out after BREADY_TIMEOUT_S
+# (default 180s — staging model download + load can take that long on a
+# cold venv). Returns 0 if marker seen, 1 if timeout.
+wait_for_b_ready() {
+  local timeout_s="${BREADY_TIMEOUT_S:-180}"
+  local interval=2
+  local elapsed=0
+  local snap
+  printf "  ${BLUE}»${RESET} waiting for ${BOLD}helloworld-b${RESET} to load model into GPU"
+  while (( elapsed < timeout_s )); do
+    snap="$(tmux capture-pane -t "${TMUX_SESSION}:0.${PANE_B}" -p 2>/dev/null || true)"
+    # Match "[ready: model loaded on ...]" regardless of device suffix.
+    # The full line tells the user whether they got cuda:0 or fell back
+    # to CPU; the marker alone is enough to advance the demo.
+    if printf '%s' "$snap" | grep -qE '\[ready: model loaded on '; then
+      local ready_line
+      ready_line="$(printf '%s' "$snap" | grep -oE '\[ready: model loaded on [^]]+\]' | tail -1)"
+      printf " ${GREEN}done${RESET} (${elapsed}s)\n"
+      printf "    ${DIM}%s${RESET}\n" "$ready_line"
+      if printf '%s' "$ready_line" | grep -q 'CPU'; then
+        warn "Model loaded on CPU — scene 02 inference will be slow."
+        warn "Check: nvidia-smi, torch CUDA install, CUDA_VISIBLE_DEVICES."
+      fi
+      return 0
+    fi
+    # Detect early death: a2a_peer.py prints a Traceback and exits if
+    # something's wrong (bad token, missing peer DID, etc). Bail fast
+    # with the captured tail so the user doesn't wait 3 minutes for
+    # nothing.
+    if printf '%s' "$snap" | grep -qE 'Traceback \(most recent call|raise SystemExit|requests\.exceptions'; then
+      printf " ${RED}failed${RESET}\n"
+      err "Agent B exited before model load. Tail of B's pane:"
+      printf '%s\n' "$snap" | tail -12 | sed 's/^/    /'
+      return 1
+    fi
+    printf "."
+    sleep "$interval"
+    elapsed=$(( elapsed + interval ))
+  done
+  printf " ${RED}timeout${RESET}\n"
+  err "Agent B did not print '[ready: model in GPU]' within ${timeout_s}s."
+  err "Inspect B's pane: ${BOLD}tmux attach -t ${TMUX_SESSION}${RESET} (then Ctrl-b q to find pane numbers)"
+  return 1
+}
+
 # ── Mode runners ────────────────────────────────────────────────
 # Run all five scenes against the current driver context. Both modes
 # call this once the agent panes/terminals are running.
@@ -162,18 +219,20 @@ run_tmux_mode() {
   tmux split-window -v -t "${TMUX_SESSION}:0.1"
   tmux select-layout -t "${TMUX_SESSION}:0" tiled
 
+  # Each pane gets A2A_PEER_AGENT_ID listing the other two DIDs — a2a_peer.py
+  # exits at import if neither A2A_PEER_AGENT_ID nor A2A_CLUSTER_ID is set.
   # Pane 0 — Agent A (stub mode). Use the per-agent venv python so we
   # don't depend on a system-wide `python` symlink.
   tmux send-keys -t "${TMUX_SESSION}:0.${PANE_A}" \
-    "cd $AGENTS_DIR/helloworld-a && .venv/bin/python a2a_peer.py" Enter
+    "cd $AGENTS_DIR/helloworld-a && A2A_PEER_AGENT_ID='$B_DID,$C_DID' .venv/bin/python a2a_peer.py" Enter
 
   # Pane 1 — Agent B (real inference)
   tmux send-keys -t "${TMUX_SESSION}:0.${PANE_B}" \
-    "cd $AGENTS_DIR/helloworld-b && A2A_USE_TRUSTED_AGENT=1 .venv/bin/python a2a_peer.py" Enter
+    "cd $AGENTS_DIR/helloworld-b && A2A_PEER_AGENT_ID='$A_DID,$C_DID' A2A_USE_TRUSTED_AGENT=1 .venv/bin/python a2a_peer.py" Enter
 
   # Pane 2 — Agent C (stub mode)
   tmux send-keys -t "${TMUX_SESSION}:0.${PANE_C}" \
-    "cd $AGENTS_DIR/helloworld-c && .venv/bin/python a2a_peer.py" Enter
+    "cd $AGENTS_DIR/helloworld-c && A2A_PEER_AGENT_ID='$A_DID,$B_DID' .venv/bin/python a2a_peer.py" Enter
 
   # Pane 3 — Driver. Re-launch this script with a private flag so the
   # driver-loop body runs inside the pane (uses the same scenes + lib).
@@ -192,13 +251,15 @@ run_manual_mode() {
   narrate "Manual orchestration. Open three terminals and run, in order:"
   printf "\n"
   printf "    ${BOLD}# Agent A (stub mode)${RESET}\n"
-  printf "    ${BOLD}cd $AGENTS_DIR/helloworld-a && .venv/bin/python a2a_peer.py${RESET}\n\n"
+  printf "    ${BOLD}cd $AGENTS_DIR/helloworld-a && A2A_PEER_AGENT_ID='$B_DID,$C_DID' .venv/bin/python a2a_peer.py${RESET}\n\n"
   printf "    ${BOLD}# Agent B (real inference)${RESET}\n"
-  printf "    ${BOLD}cd $AGENTS_DIR/helloworld-b && A2A_USE_TRUSTED_AGENT=1 .venv/bin/python a2a_peer.py${RESET}\n\n"
+  printf "    ${BOLD}cd $AGENTS_DIR/helloworld-b && A2A_PEER_AGENT_ID='$A_DID,$C_DID' A2A_USE_TRUSTED_AGENT=1 .venv/bin/python a2a_peer.py${RESET}\n\n"
   printf "    ${BOLD}# Agent C (stub mode)${RESET}\n"
-  printf "    ${BOLD}cd $AGENTS_DIR/helloworld-c && .venv/bin/python a2a_peer.py${RESET}\n\n"
+  printf "    ${BOLD}cd $AGENTS_DIR/helloworld-c && A2A_PEER_AGENT_ID='$A_DID,$B_DID' .venv/bin/python a2a_peer.py${RESET}\n\n"
   narrate "Wait until each one shows ${DIM}me = ...${RESET} and a ${DIM}> ${RESET} prompt."
-  wait_for_enter "Press Enter when all three terminals are running"
+  narrate "On Agent B specifically, wait for the ${BOLD}[ready: model in GPU]${RESET} line"
+  narrate "(eager model load; takes 5-30s on a warm cache, longer on first run)."
+  wait_for_enter "Press Enter when all three terminals are running AND B shows [ready: model in GPU]"
   run_all_scenes
 
   narrate "Demo done. Stop the agents to free GPU memory:"
@@ -226,8 +287,14 @@ run_driver_loop() {
   banner
   narrate "You are in the ${BOLD}driver pane${RESET}. The other three panes are running"
   narrate "agents A (top-left), B (top-right) and C (bottom-left)."
-  narrate "Wait for each agent to print its banner and ${DIM}> ${RESET} prompt."
-  wait_for_enter "Press Enter when all three agents are ready"
+  narrate "Agents A and C run in stub mode (no model load); B is the real-inference"
+  narrate "target and pre-loads its model into GPU before we start."
+  printf "\n"
+  if ! wait_for_b_ready; then
+    err "Aborting demo. Fix B's pane and rerun ${BOLD}./demo/run.sh${RESET}."
+    return 1
+  fi
+  wait_for_enter "Press Enter to begin Scene 01"
 
   # If the driver crashes mid-scene, still clean up the agents so the GPU
   # is freed. Disabled before normal completion (we want to give the user
