@@ -50,10 +50,19 @@ Leave `MODEL_TEMPLATE_ID` and `AGENT_TEMPLATE_ID` blank on first run — `quicks
 
 ## Want to see the full A2A trust story?
 
-Once you have three personalized agents (`helloworld-a/-b/-c`), run
-`./demo/run.sh` for a guided five-scene walkthrough — basic chat,
-prompt serving with real inference, guardrail block, operator
-isolation, and the audit journal. See [demo/README.md](demo/README.md).
+Run **one** command from this directory:
+
+```bash
+./quickstart.sh --demo
+```
+
+This bootstraps the templates (if needed), provisions three peer agents
+(`helloworld-a/-b/-c`), pre-warms the model on B, and launches a
+five-scene guided walkthrough — basic chat, prompt serving with real
+inference, adversarial input blocked, operator quarantine via the AOC
+console, and the audit journal. ~10–15 min on a fresh checkout, seconds
+on subsequent runs. See [demo/README.md](demo/README.md) for what each
+scene shows and how to read the four-pane tmux layout.
 
 ## Common Commands
 

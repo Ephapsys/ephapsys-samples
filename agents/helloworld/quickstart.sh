@@ -84,16 +84,25 @@ banner
 # ── Parse args ──────────────────────────────────────────────────
 MODE="local"
 FRESH_START=false
+DEMO=false
+DEMO_PEERS=3
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --gcp)   MODE="gcp"; shift ;;
-    --local) MODE="local"; shift ;;
-    --fresh) FRESH_START=true; shift ;;
-    *)       ARGS+=("$1"); shift ;;
+    --gcp)        MODE="gcp"; shift ;;
+    --local)      MODE="local"; shift ;;
+    --fresh)      FRESH_START=true; shift ;;
+    --demo)       DEMO=true; shift ;;
+    --demo-peers) DEMO=true; DEMO_PEERS="$2"; shift 2 ;;
+    *)            ARGS+=("$1"); shift ;;
   esac
 done
+
+if $DEMO && [[ "$MODE" != "local" ]]; then
+  warn "--demo currently runs only in local mode; ignoring --gcp."
+  MODE="local"
+fi
 
 if $FRESH_START; then
   step "0" "Fresh start"
@@ -101,6 +110,12 @@ if $FRESH_START; then
   sed -i '' 's/^MODEL_TEMPLATE_ID=.*/MODEL_TEMPLATE_ID=/' .env 2>/dev/null || sed -i 's/^MODEL_TEMPLATE_ID=.*/MODEL_TEMPLATE_ID=/' .env
   sed -i '' 's/^AGENT_TEMPLATE_ID=.*/AGENT_TEMPLATE_ID=/' .env 2>/dev/null || sed -i 's/^AGENT_TEMPLATE_ID=.*/AGENT_TEMPLATE_ID=/' .env
   rm -rf .ephapsys_state .venv ../../modulators/language/.venv 2>/dev/null || true
+  if $DEMO; then
+    # Also wipe any peer dirs so setup re-creates them.
+    for letter in a b c d e f g; do
+      rm -rf "../helloworld-${letter}" 2>/dev/null || true
+    done
+  fi
   export HELLOWORLD_MODEL_NAME="HelloWorld Starter Model ${FRESH_TAG}"
   export AGENT_TEMPLATE_NAME="HelloWorld Agent Template ${FRESH_TAG}"
   success "Cleared state — starting fresh as ${DIM}${FRESH_TAG}${RESET}"
@@ -219,6 +234,16 @@ else
 fi
 
 # ── Step 2: Launch ──────────────────────────────────────────────
+if $DEMO; then
+  step "2" "Provisioning ${DEMO_PEERS} demo peers + pre-warming model"
+  separator
+  ./demo/setup.sh --peers "$DEMO_PEERS"
+
+  step "3" "Launching A2A trust demo"
+  separator
+  exec ./demo/run.sh
+fi
+
 step "2" "Launching agent"
 separator
 
