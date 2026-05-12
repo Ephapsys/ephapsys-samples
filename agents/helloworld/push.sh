@@ -472,16 +472,33 @@ poll_until_ready() {
 trigger_idempotent_publish() {
   local model_id="$1"
   step "Triggering idempotent in-graph modulation for ${model_id}"
-  curl -sS -X POST "${AOC_API}/modulation/start" \
+  # Capture both body and HTTP status. The earlier `>/dev/null` swallowed
+  # 5xx responses (e.g. OSError 28 from a full /uploads PVC), causing the
+  # subsequent poll_until_ready loop to hang silently for ~25 min waiting
+  # for a modulation that was never accepted. Surface the failure loudly.
+  local response http_code body
+  response="$(curl -sS -X POST "${AOC_API}/modulation/start" \
     "${AUTH_HEADER[@]}" \
     -H "Content-Type: application/json" \
+    -w $'\n%{http_code}' \
     -d "{
       \"model_template_id\": \"${model_id}\",
       \"skip_modulation\": true,
       \"mode\": \"auto\",
       \"variant\": \"baseline\",
       \"kpi\": {\"targets\": [], \"maxSteps\": 1}
-    }" >/dev/null
+    }" 2>&1)"
+  http_code="$(printf '%s\n' "$response" | tail -n1)"
+  body="$(printf '%s\n' "$response" | sed '$d')"
+  if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+    error "POST /modulation/start failed (HTTP ${http_code:-no-response}) for ${model_id}"
+    if [[ -n "$body" ]]; then
+      error "Response body (first 500 chars):"
+      printf '%s\n' "${body:0:500}" | sed 's/^/    /' >&2
+    fi
+    error "Common causes: AOC backend out of disk on /uploads PVC, or modulation/start route returned 5xx."
+    exit 1
+  fi
 }
 
 MOD_ENV_BACKUP=""
