@@ -289,10 +289,18 @@ fetch_model_templates() {
 }
 
 resolve_model_template() {
+  # Filter to REGISTERED only — skip DOWNLOAD_FAILED / DOWNLOADING so we
+  # reuse a known-good template when a recent registration broke. Without
+  # this, resolve returns the latest-matching template regardless of
+  # status and push.sh hands a broken ID to wait_for_model_download.
+  # Old behavior preserved as comment in case healthy filter ever needs
+  # to be relaxed:
+  #   | map(select(... model_kind match AND repo|name match))
   fetch_model_templates | jq -r --arg repo "$MODEL_REPO" --arg kind "$MODEL_KIND" --arg name "$MODEL_NAME" '
     (.items // [])
     | map(select((((.model_kind // .kind // "") | ascii_downcase) == ($kind | ascii_downcase))
-      and ((.source_repo // "") == $repo or (.name // "") == $name or (.name // "") == ("HuggingFace " + $repo))))
+      and ((.source_repo // "") == $repo or (.name // "") == $name or (.name // "") == ("HuggingFace " + $repo))
+      and (((.status // "") | ascii_upcase) == "REGISTERED")))
     | sort_by(.created_at // 0)
     | last
     | (.ID // .public_id // .internal_id // ._id // empty)'
