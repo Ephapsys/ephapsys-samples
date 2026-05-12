@@ -611,8 +611,27 @@ step "Resolving existing model template"
 if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
   CLI_TOKEN="$(cli_login)"
   register_model_template "$CLI_TOKEN"
-  step "Refreshing model template lookup after registration"
-  MODEL_TEMPLATE_ID="$(resolve_model_template || true)"
+  # AOC accepts the register POST synchronously but materializes the
+  # template row in /models?type=TEMPLATE a few seconds later (HF fetch +
+  # GCS upload), so a single-shot resolve right after register often
+  # misses it. Poll until PUSH_RESOLVE_TIMEOUT_S elapses; override via
+  # env var when staging is slow (default 300s = 5min).
+  # MODEL_TEMPLATE_ID="$(resolve_model_template || true)"   # old single-shot
+  RESOLVE_TIMEOUT_S="${PUSH_RESOLVE_TIMEOUT_S:-300}"
+  RESOLVE_INTERVAL_S=2
+  RESOLVE_MAX_ATTEMPTS=$(( RESOLVE_TIMEOUT_S / RESOLVE_INTERVAL_S ))
+  step "Refreshing model template lookup after registration (timeout=${RESOLVE_TIMEOUT_S}s)"
+  for attempt in $(seq 1 "$RESOLVE_MAX_ATTEMPTS"); do
+    MODEL_TEMPLATE_ID="$(resolve_model_template || true)"
+    if [[ -n "$MODEL_TEMPLATE_ID" ]]; then
+      printf "\n"
+      info "Template materialized after ${attempt} attempt(s) (~$(( attempt * RESOLVE_INTERVAL_S ))s)"
+      break
+    fi
+    printf "."
+    sleep "$RESOLVE_INTERVAL_S"
+  done
+  printf "\n"
   if [[ -n "$MODEL_TEMPLATE_ID" ]]; then
     wait_for_model_download "$MODEL_TEMPLATE_ID"
   fi
@@ -620,6 +639,16 @@ fi
 
 if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
   error "Failed to resolve language model template for ${MODEL_REPO}"
+  # Diagnostic: show what AOC actually has so we can tell if it's still
+  # async (template not there yet) vs a filter mismatch (template there
+  # but resolve_model_template's jq filter rejected it).
+  warn "Dumping last 5 templates from AOC for diagnosis:"
+  fetch_model_templates \
+    | jq -r '.items // [] | sort_by(.created_at // 0) | reverse | .[0:5]
+              | .[] | "  - id=\(.ID // .public_id // ._id)  name=\(.name)  repo=\(.source_repo // "-")  kind=\(.model_kind // .kind // "-")  created=\(.created_at // "-")"' \
+    2>/dev/null || warn "  (could not fetch /models?type=TEMPLATE)"
+  printf "\n  ${BOLD}To retry with a longer timeout:${RESET}\n"
+  printf "    PUSH_RESOLVE_TIMEOUT_S=600 ./quickstart.sh --demo\n\n"
   exit 1
 fi
 

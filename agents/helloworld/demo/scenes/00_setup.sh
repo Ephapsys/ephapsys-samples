@@ -94,5 +94,54 @@ run_scene_setup() {
     return 1
   fi
   success "All three agents are ENABLED in the AOC"
+
+  # Drain any backlog in each peer's inbox before the demo launches. The
+  # SDK poller in a2a_peer.py delivers every unacked message on its first
+  # poll — without this, leftover messages from prior demo runs (old
+  # chat, old /ask tool_results, old system.status_change broadcasts from
+  # scene 04) land in the agent panes the moment the demo starts and
+  # look like the agents are talking on their own. Same drain pattern
+  # the harness uses in its phase-2 bootstrap (a2a_test_harness.py).
+  local drained_total=0 drain_errors=0
+  for letter in a b c; do
+    local did inbox_json msg_ids count
+    did="$(cat "$agents_dir/helloworld-$letter/.ephapsys_state/agent_id")"
+    inbox_json="$(curl -fsS --max-time 10 \
+      "$aoc_base/a2a/messages/inbox?agent_id=$did&limit=200&include_acked=false" \
+      -H "Authorization: Bearer $aoc_token" 2>/dev/null || true)"
+    if [[ -z "$inbox_json" ]]; then
+      warn "helloworld-$letter: could not fetch inbox — skipping drain"
+      drain_errors=$(( drain_errors + 1 ))
+      continue
+    fi
+    msg_ids="$(printf '%s' "$inbox_json" | jq -r '.items[]?.id // empty')"
+    count=0
+    while IFS= read -r mid; do
+      [[ -z "$mid" ]] && continue
+      if curl -fsS --max-time 10 -X POST \
+          "$aoc_base/a2a/messages/$mid/ack" \
+          -H "Authorization: Bearer $aoc_token" \
+          -H "Content-Type: application/json" \
+          --data "$(jq -nc --arg did "$did" '{agent_id:$did}')" \
+          >/dev/null 2>&1; then
+        count=$(( count + 1 ))
+      else
+        drain_errors=$(( drain_errors + 1 ))
+      fi
+    done <<< "$msg_ids"
+    drained_total=$(( drained_total + count ))
+    if (( count > 0 )); then
+      printf "    ${DIM}drained helloworld-%s: %d message(s)${RESET}\n" "$letter" "$count"
+    fi
+  done
+
+  if (( drain_errors > 0 )); then
+    warn "Inbox drain had $drain_errors ack error(s) — demo may still show stale messages"
+  fi
+  if (( drained_total > 0 )); then
+    success "Drained $drained_total backlog message(s) from peer inboxes"
+  else
+    success "All peer inboxes already empty"
+  fi
   return 0
 }

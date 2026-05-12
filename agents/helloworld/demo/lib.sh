@@ -241,6 +241,8 @@ run_tmux_mode() {
 
   # Give the agent panes ~2s to print their banners before attach.
   sleep 2
+  # Start with focus on the driver pane — that's where the user types.
+  tmux select-pane -t "${TMUX_SESSION}:0.${PANE_DRIVER}"
   tmux attach -t "$TMUX_SESSION"
 }
 
