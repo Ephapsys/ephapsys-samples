@@ -18,7 +18,7 @@ run_scene_setup() {
   if (( ${#missing[@]} > 0 )); then
     err "Missing personalized agent state for: ${missing[*]}"
     printf "\n  Provision the demo agents with one command from ${BOLD}helloworld/${RESET}:\n\n"
-    printf "    ${BOLD}./quickstart.sh --demo${RESET}\n\n"
+    printf "    ${BOLD}./quickstart.sh --a2a-demo${RESET}\n\n"
     printf "  This bootstraps templates (if needed), creates the three peer\n"
     printf "  state dirs, personalizes each instance, pre-warms the model on\n"
     printf "  helloworld-b, then launches the demo. ~10-15 min on first run,\n"

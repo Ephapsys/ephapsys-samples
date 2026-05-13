@@ -53,7 +53,7 @@ Leave `MODEL_TEMPLATE_ID` and `AGENT_TEMPLATE_ID` blank on first run — `quicks
 Run **one** command from this directory:
 
 ```bash
-./quickstart.sh --demo
+./quickstart.sh --a2a-demo
 ```
 
 This bootstraps the templates (if needed), provisions three peer agents

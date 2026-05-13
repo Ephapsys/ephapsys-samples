@@ -24,7 +24,7 @@ edge↔cloud uses in production.
 From `agents/helloworld/`, after editing `.env` with AOC credentials:
 
 ```
-./quickstart.sh --demo
+./quickstart.sh --a2a-demo
 ```
 
 This is the fastest path from a fresh checkout. It will:
@@ -47,7 +47,7 @@ step 1). Subsequent runs: a few seconds (everything's cached).
 To re-bootstrap from scratch (clears templates *and* peer state dirs):
 
 ```
-./quickstart.sh --demo --fresh
+./quickstart.sh --a2a-demo --fresh
 ```
 
 ### Manual fallback
@@ -75,7 +75,7 @@ machines), use `./demo/setup.sh` directly after running plain
 
 ## Running the demo
 
-If you used `--demo` above, the demo launches automatically. If you've
+If you used `--a2a-demo` above, the demo launches automatically. If you've
 already provisioned peers and just want to relaunch:
 
 ```
@@ -144,14 +144,14 @@ have. Two demo-specific overrides:
 ## Troubleshooting
 
 **`Missing personalized agent state for: ...`** — Run
-`./quickstart.sh --demo` (or `./demo/setup.sh` if templates already exist).
+`./quickstart.sh --a2a-demo` (or `./demo/setup.sh` if templates already exist).
 
 **Agent B's pane never prints `[handled tool_call ...]`** — Confirm the
 launch line includes `A2A_USE_TRUSTED_AGENT=1`. The demo sets it
 automatically; only matters if you're running `--no-tmux` and copy-paste
 without the prefix. Without it, B returns the echo stub.
 
-**Scene 02 takes longer than 30 s** — Not expected if `--demo` ran the
+**Scene 02 takes longer than 30 s** — Not expected if `--a2a-demo` ran the
 warmup step. If you skipped warmup, the first `/ask` includes a one-time
 lazy model load (~5–15 s). Subsequent calls are faster.
 
@@ -170,7 +170,7 @@ or use `--no-tmux` and lay the windows out yourself.
 | Path | Purpose |
 |---|---|
 | `demo/run.sh` | Demo entry point; tmux orchestration + driver loop. |
-| `demo/setup.sh` | Multi-peer provisioner (called by `quickstart.sh --demo`). |
+| `demo/setup.sh` | Multi-peer provisioner (called by `quickstart.sh --a2a-demo`). |
 | `demo/personalize_peer.py` | Per-peer verify + personalize (no chat loop). |
 | `demo/lib.sh` | Shared helpers: colors, `tmux_send`, `wait_for_enter`, `you_saw`, mode runners. |
 | `demo/scenes/00_setup.sh` | Preflight check (peers provisioned). |

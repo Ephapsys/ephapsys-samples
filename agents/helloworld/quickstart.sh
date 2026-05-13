@@ -93,14 +93,14 @@ while [[ $# -gt 0 ]]; do
     --gcp)        MODE="gcp"; shift ;;
     --local)      MODE="local"; shift ;;
     --fresh)      FRESH_START=true; shift ;;
-    --demo)       DEMO=true; shift ;;
-    --demo-peers) DEMO=true; DEMO_PEERS="$2"; shift 2 ;;
+    --a2a-demo)       DEMO=true; shift ;;
+    --a2a-demo-peers) DEMO=true; DEMO_PEERS="$2"; shift 2 ;;
     *)            ARGS+=("$1"); shift ;;
   esac
 done
 
 if $DEMO && [[ "$MODE" != "local" ]]; then
-  warn "--demo currently runs only in local mode; ignoring --gcp."
+  warn "--a2a-demo currently runs only in local mode; ignoring --gcp."
   MODE="local"
 fi
 
