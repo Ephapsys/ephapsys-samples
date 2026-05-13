@@ -581,21 +581,28 @@ resolve_agent_template() {
 
 create_agent_template() {
   local payload
+  # `label` and `type` are reserved keywords in jq — used as object keys
+  # they must be quoted as strings or jq errors with "unexpected label /
+  # type". Same fix as fix/push-script-jq-cleanup; that branch never got
+  # merged into A2A_demo.
+  # Old unquoted form preserved for reference:
+  #   { label: $label, description: $description, type: "TEMPLATE",
+  #     models: [{ id: $model_id, config: { type: "language", policies: $policies } }] }
   payload=$(jq -n \
-    --arg label "$AGENT_LABEL" \
-    --arg description "$AGENT_DESCRIPTION" \
+    --arg label_v "$AGENT_LABEL" \
+    --arg description_v "$AGENT_DESCRIPTION" \
     --arg model_id "$MODEL_TEMPLATE_ID" \
     --argjson policies "$DEFAULT_POLICY_JSON" '
       {
-        label: $label,
-        description: $description,
-        type: "TEMPLATE",
-        models: [
+        "label": $label_v,
+        "description": $description_v,
+        "type": "TEMPLATE",
+        "models": [
           {
-            id: $model_id,
-            config: {
-              type: "language",
-              policies: $policies
+            "id": $model_id,
+            "config": {
+              "type": "language",
+              "policies": $policies
             }
           }
         ]
@@ -656,7 +663,7 @@ if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
               | .[] | "  - id=\(.ID // .public_id // ._id)  name=\(.name)  repo=\(.source_repo // "-")  kind=\(.model_kind // .kind // "-")  created=\(.created_at // "-")"' \
     2>/dev/null || warn "  (could not fetch /models?type=TEMPLATE)"
   printf "\n  ${BOLD}To retry with a longer timeout:${RESET}\n"
-  printf "    PUSH_RESOLVE_TIMEOUT_S=600 ./quickstart.sh --demo\n\n"
+  printf "    PUSH_RESOLVE_TIMEOUT_S=600 ./quickstart.sh --a2a-demo\n\n"
   exit 1
 fi
 

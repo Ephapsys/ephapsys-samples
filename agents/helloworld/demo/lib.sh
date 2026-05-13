@@ -45,6 +45,14 @@ err() {
   printf "  ${RED}✖${RESET} %b\n" "$*" >&2
 }
 
+# Plain informational line — used by setup.sh during peer provisioning.
+# Defined here (not just in push.sh) so setup.sh's `info "..."` calls
+# don't fall through to /usr/bin/info (GNU texinfo viewer) and error
+# with "No menu item ... in node '(dir)Top'".
+info() {
+  printf "  ${DIM}%b${RESET}\n" "$*"
+}
+
 separator() {
   printf "  ${DIM}%s${RESET}\n" "────────────────────────────────────────────────"
 }
@@ -172,14 +180,16 @@ wait_for_b_ready() {
 }
 
 # ── Mode runners ────────────────────────────────────────────────
-# Run all five scenes against the current driver context. Both modes
+# Run the four demo scenes against the current driver context. Both modes
 # call this once the agent panes/terminals are running.
+# Scene 05 (journal) intentionally dropped — operator can still inspect
+# the per-peer a2a_journal.jsonl files manually after the demo if needed.
 run_all_scenes() {
   run_scene_basic_chat        "$A_DID" "$B_DID" "$C_DID"
   run_scene_prompt_serving    "$A_DID" "$B_DID" "$C_DID"
   run_scene_guardrail         "$A_DID" "$B_DID" "$C_DID"
   run_scene_isolation         "$A_DID" "$B_DID" "$C_DID"
-  run_scene_journal           "$A_DID" "$B_DID" "$C_DID"
+  # run_scene_journal         "$A_DID" "$B_DID" "$C_DID"   # disabled
 
   printf "\n  ${GREEN}━━━ demo complete ━━━${RESET}\n\n"
 }
