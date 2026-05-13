@@ -46,3 +46,6 @@ modulators/language/.env~
 agents/helloworld/demo/A2A_demo.pptx
 agents/helloworld/demo/A2A_demo.html
 agents/helloworld/demo/build_pptx.py
+
+# Local team-brief notes (kept out of repo)
+agents/helloworld/A2A_PEER_NOTES.md
