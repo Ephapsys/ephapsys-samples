@@ -1,6 +1,7 @@
 # HelloWorld Agent
 
 The smallest useful Ephapsys agent. It can:
+
 - Personalize an agent instance against the AOC
 - Prepare the runtime automatically
 - Open an interactive chat session locally or on GCP
@@ -14,6 +15,7 @@ cp .env.example .env    # fill in AOC credentials
 ```
 
 `quickstart.sh` will:
+
 - Create `.env` from `.env.example` if needed, then stop so you can fill in credentials
 - Reuse existing templates when `MODEL_TEMPLATE_ID` / `AGENT_TEMPLATE_ID` are set
 - Otherwise bootstrap starter templates via `./push.sh`
@@ -38,13 +40,13 @@ cp .env.gcp.example .env.gcp   # fill in GCP project settings
 
 Populate `.env` with:
 
-| Variable | Source | Required for |
-|----------|--------|-------------|
-| `AOC_BASE_URL` | `https://api.ephapsys.com` | All |
-| `AOC_ORG_ID` | AOC > Organization | All |
-| `AOC_PROVISIONING_TOKEN` | AOC > Organization > Tokens (`boot_...`) | Runtime |
-| `AOC_MODULATION_TOKEN` | AOC > Organization > Tokens (`mod_...`) | Bootstrap (`push.sh`) |
-| `HF_TOKEN` | Hugging Face | Only if model repo is private/gated |
+| Variable                 | Source                                   | Required for                        |
+| ------------------------ | ---------------------------------------- | ----------------------------------- |
+| `AOC_BASE_URL`           | `https://api.ephapsys.com`               | All                                 |
+| `AOC_ORG_ID`             | AOC > Organization                       | All                                 |
+| `AOC_PROVISIONING_TOKEN` | AOC > Organization > Tokens (`boot_...`) | Runtime                             |
+| `AOC_MODULATION_TOKEN`   | AOC > Organization > Tokens (`mod_...`)  | Bootstrap (`push.sh`)               |
+| `HF_TOKEN`               | Hugging Face                             | Only if model repo is private/gated |
 
 Leave `MODEL_TEMPLATE_ID` and `AGENT_TEMPLATE_ID` blank on first run — `quickstart.sh` populates them.
 
@@ -58,9 +60,9 @@ Run **one** command from this directory:
 
 This bootstraps the templates (if needed), provisions three peer agents
 (`helloworld-a/-b/-c`), pre-warms the model on B, and launches a
-five-scene guided walkthrough — basic chat, prompt serving with real
+four-scene guided walkthrough — basic chat, prompt serving with real
 inference, adversarial input blocked, operator quarantine via the AOC
-console, and the audit journal. ~10–15 min on a fresh checkout, seconds
+console. ~10–15 min on a fresh checkout, seconds
 on subsequent runs. See [demo/README.md](demo/README.md) for what each
 scene shows and how to read the four-pane tmux layout.
 
@@ -78,20 +80,20 @@ scene shows and how to read the four-pane tmux layout.
 
 ## Common Failures
 
-| Error | Cause |
-|-------|-------|
-| `invalid provisioning token` | `AOC_PROVISIONING_TOKEN` is stale or wrong |
+| Error                          | Cause                                                        |
+| ------------------------------ | ------------------------------------------------------------ |
+| `invalid provisioning token`   | `AOC_PROVISIONING_TOKEN` is stale or wrong                   |
 | `404 Agent template not found` | `AGENT_TEMPLATE_ID` is wrong or from a different environment |
-| `language_model_not_ready` | Model exists but not fully published/modulated |
-| `ZONE_RESOURCE_POOL_EXHAUSTED` | GPU not available in that zone (GCP) |
+| `language_model_not_ready`     | Model exists but not fully published/modulated               |
+| `ZONE_RESOURCE_POOL_EXHAUSTED` | GPU not available in that zone (GCP)                         |
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `helloworld_agent.py` | Minimal TrustedAgent demo |
-| `quickstart.sh` | Main entrypoint — bootstrap + run |
-| `run.sh` | Runtime entrypoint |
-| `push.sh` | Template bootstrap |
-| `run_local.sh` | Local runtime helper |
-| `run_gcp.sh` | GCP deployer with VM reuse |
+| File                  | Purpose                           |
+| --------------------- | --------------------------------- |
+| `helloworld_agent.py` | Minimal TrustedAgent demo         |
+| `quickstart.sh`       | Main entrypoint — bootstrap + run |
+| `run.sh`              | Runtime entrypoint                |
+| `push.sh`             | Template bootstrap                |
+| `run_local.sh`        | Local runtime helper              |
+| `run_gcp.sh`          | GCP deployer with VM reuse        |
