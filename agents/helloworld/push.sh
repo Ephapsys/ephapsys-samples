@@ -289,10 +289,18 @@ fetch_model_templates() {
 }
 
 resolve_model_template() {
+  # Filter to REGISTERED only — skip DOWNLOAD_FAILED / DOWNLOADING so we
+  # reuse a known-good template when a recent registration broke. Without
+  # this, resolve returns the latest-matching template regardless of
+  # status and push.sh hands a broken ID to wait_for_model_download.
+  # Old behavior preserved as comment in case healthy filter ever needs
+  # to be relaxed:
+  #   | map(select(... model_kind match AND repo|name match))
   fetch_model_templates | jq -r --arg repo "$MODEL_REPO" --arg kind "$MODEL_KIND" --arg name "$MODEL_NAME" '
     (.items // [])
     | map(select((((.model_kind // .kind // "") | ascii_downcase) == ($kind | ascii_downcase))
-      and ((.source_repo // "") == $repo or (.name // "") == $name or (.name // "") == ("HuggingFace " + $repo))))
+      and ((.source_repo // "") == $repo or (.name // "") == $name or (.name // "") == ("HuggingFace " + $repo))
+      and (((.status // "") | ascii_upcase) == "REGISTERED")))
     | sort_by(.created_at // 0)
     | last
     | (.ID // .public_id // .internal_id // ._id // empty)'
@@ -590,21 +598,28 @@ resolve_agent_template() {
 
 create_agent_template() {
   local payload
+  # `label` and `type` are reserved keywords in jq — used as object keys
+  # they must be quoted as strings or jq errors with "unexpected label /
+  # type". Same fix as fix/push-script-jq-cleanup; that branch never got
+  # merged into A2A_demo.
+  # Old unquoted form preserved for reference:
+  #   { label: $label, description: $description, type: "TEMPLATE",
+  #     models: [{ id: $model_id, config: { type: "language", policies: $policies } }] }
   payload=$(jq -n \
-    --arg label "$AGENT_LABEL" \
-    --arg description "$AGENT_DESCRIPTION" \
+    --arg label_v "$AGENT_LABEL" \
+    --arg description_v "$AGENT_DESCRIPTION" \
     --arg model_id "$MODEL_TEMPLATE_ID" \
     --argjson policies "$DEFAULT_POLICY_JSON" '
       {
-        label: $label,
-        description: $description,
-        type: "TEMPLATE",
-        models: [
+        "label": $label_v,
+        "description": $description_v,
+        "type": "TEMPLATE",
+        "models": [
           {
-            id: $model_id,
-            config: {
-              type: "language",
-              policies: $policies
+            "id": $model_id,
+            "config": {
+              "type": "language",
+              "policies": $policies
             }
           }
         ]
@@ -628,8 +643,27 @@ step "Resolving existing model template"
 if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
   CLI_TOKEN="$(cli_login)"
   register_model_template "$CLI_TOKEN"
-  step "Refreshing model template lookup after registration"
-  MODEL_TEMPLATE_ID="$(resolve_model_template || true)"
+  # AOC accepts the register POST synchronously but materializes the
+  # template row in /models?type=TEMPLATE a few seconds later (HF fetch +
+  # GCS upload), so a single-shot resolve right after register often
+  # misses it. Poll until PUSH_RESOLVE_TIMEOUT_S elapses; override via
+  # env var when staging is slow (default 300s = 5min).
+  # MODEL_TEMPLATE_ID="$(resolve_model_template || true)"   # old single-shot
+  RESOLVE_TIMEOUT_S="${PUSH_RESOLVE_TIMEOUT_S:-300}"
+  RESOLVE_INTERVAL_S=2
+  RESOLVE_MAX_ATTEMPTS=$(( RESOLVE_TIMEOUT_S / RESOLVE_INTERVAL_S ))
+  step "Refreshing model template lookup after registration (timeout=${RESOLVE_TIMEOUT_S}s)"
+  for attempt in $(seq 1 "$RESOLVE_MAX_ATTEMPTS"); do
+    MODEL_TEMPLATE_ID="$(resolve_model_template || true)"
+    if [[ -n "$MODEL_TEMPLATE_ID" ]]; then
+      printf "\n"
+      info "Template materialized after ${attempt} attempt(s) (~$(( attempt * RESOLVE_INTERVAL_S ))s)"
+      break
+    fi
+    printf "."
+    sleep "$RESOLVE_INTERVAL_S"
+  done
+  printf "\n"
   if [[ -n "$MODEL_TEMPLATE_ID" ]]; then
     wait_for_model_download "$MODEL_TEMPLATE_ID"
   fi
@@ -637,6 +671,16 @@ fi
 
 if [[ -z "$MODEL_TEMPLATE_ID" ]]; then
   error "Failed to resolve language model template for ${MODEL_REPO}"
+  # Diagnostic: show what AOC actually has so we can tell if it's still
+  # async (template not there yet) vs a filter mismatch (template there
+  # but resolve_model_template's jq filter rejected it).
+  warn "Dumping last 5 templates from AOC for diagnosis:"
+  fetch_model_templates \
+    | jq -r '.items // [] | sort_by(.created_at // 0) | reverse | .[0:5]
+              | .[] | "  - id=\(.ID // .public_id // ._id)  name=\(.name)  repo=\(.source_repo // "-")  kind=\(.model_kind // .kind // "-")  created=\(.created_at // "-")"' \
+    2>/dev/null || warn "  (could not fetch /models?type=TEMPLATE)"
+  printf "\n  ${BOLD}To retry with a longer timeout:${RESET}\n"
+  printf "    PUSH_RESOLVE_TIMEOUT_S=600 ./quickstart.sh --a2a-demo\n\n"
   exit 1
 fi
 
