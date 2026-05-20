@@ -70,7 +70,9 @@ while [[ $# -gt 0 ]]; do
       # --gpu only matters for GCP (Lambda picks via LAMBDA_INSTANCE_TYPES env);
       # historically this also implicitly switched MODE to gcp. Preserve that
       # behavior for the GCP case but don't override an explicit --lambda.
-      if [ "$MODE" != "lambda" ]; then
+      if [ "$MODE" = "lambda" ]; then
+        printf "[WARN] --gpu has no effect with --lambda; set LAMBDA_INSTANCE_TYPES in .env.lambda instead.\n" >&2
+      else
         MODE="gcp"
       fi
       GPU="$2"
