@@ -23,7 +23,7 @@
 #
 #  Optional:
 #    LAMBDA_INSTANCE_TYPES    Comma-separated fallback list (default
-#                             gpu_2x_h100_sxm5,gpu_1x_h100_sxm5,gpu_1x_h100_pcie,gpu_1x_a10)
+#                             gpu_1x_a100,gpu_1x_a100_sxm4,gpu_1x_a10)
 #    LAMBDA_API_BASE          API base URL (defaults to public endpoint)
 #    SDK_PACKAGE_SOURCE       pypi | testpypi
 #    SDK_VERSION              Pinned SDK version (auto-detected from local env)
@@ -39,6 +39,10 @@ RED="\033[91m"
 RESET="\033[0m"
 
 COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Shared Lambda Cloud helpers (lambda_api, launch, wait_active, wait_ssh, terminate).
+# Also used by agents/helloworld/run_lambda.sh for the persistent-VM runtime path.
+# shellcheck source=lib/lambda.sh
+source "$COMMON_DIR/lib/lambda.sh"
 MODULATOR_DIR="${MODULATOR_DIR:-$(pwd)}"
 MODULATOR_KIND="${MODULATOR_KIND:-$(basename "$MODULATOR_DIR")}"
 TRAINER_SCRIPT="${TRAINER_SCRIPT:-train_${MODULATOR_KIND}.py}"
@@ -94,7 +98,7 @@ LAMBDA_API_BASE="${LAMBDA_API_BASE:-https://cloud.lambdalabs.com/api/v1}"
 LAMBDA_API_KEY="${LAMBDA_API_KEY:-}"
 LAMBDA_SSH_KEY_NAME="${LAMBDA_SSH_KEY_NAME:-}"
 LAMBDA_SSH_KEY_PATH="${LAMBDA_SSH_KEY_PATH:-}"
-LAMBDA_INSTANCE_TYPES="${LAMBDA_INSTANCE_TYPES:-gpu_2x_h100_sxm5,gpu_1x_h100_sxm5,gpu_1x_h100_pcie,gpu_1x_a10}"
+LAMBDA_INSTANCE_TYPES="${LAMBDA_INSTANCE_TYPES:-gpu_1x_a100,gpu_1x_a100_sxm4,gpu_1x_a10}"
 
 # AOC creds — must be set
 if [ -z "$BASE_URL" ] || [ -z "$AOC_ORG_ID" ] || [ -z "$AOC_MODULATION_TOKEN" ] || [ -z "$MODEL_TEMPLATE_ID" ]; then
@@ -153,54 +157,15 @@ error()   { printf "${RED}[ERROR]${RESET} %s\n" "$*" >&2; }
 MASKED="${AOC_MODULATION_TOKEN:0:8}********"
 echo "🔐 Env loaded: BASE_URL=$BASE_URL, AOC_ORG_ID=$AOC_ORG_ID, AOC_MODULATION_TOKEN=${MASKED}, MODEL_TEMPLATE_ID=$MODEL_TEMPLATE_ID"
 
-# ── Lambda API helper ───────────────────────────────────────────
-lambda_api() {
-  local method="$1" path="$2"; shift 2
-  curl -sS -u "${LAMBDA_API_KEY}:" -X "$method" "${LAMBDA_API_BASE}${path}" \
-    -H 'Content-Type: application/json' "$@"
-}
-
-# ── Capacity-aware launch ───────────────────────────────────────
+# ── Capacity-aware launch (helpers provided by lib/lambda.sh) ──
+# Locally-named globals kept for backward compat with downstream code in this
+# file (cleanup, log lines, etc.) that references INSTANCE_ID / LAUNCHED_TYPE
+# / LAUNCHED_REGION / HOST. We mirror the LAMBDA_* outputs from the lib into
+# these names so the rest of the script needs no rename.
 INSTANCE_ID=""
 LAUNCHED_TYPE=""
 LAUNCHED_REGION=""
-
-launch_instance() {
-  echo "🛰  Searching Lambda capacity across instance types..."
-  local avail
-  avail="$(lambda_api GET /instance-types 2>/dev/null || true)"
-  if [ -z "$avail" ]; then
-    error "Failed to query Lambda /instance-types — check LAMBDA_API_KEY"
-    return 1
-  fi
-
-  IFS=',' read -ra TYPES <<< "$LAMBDA_INSTANCE_TYPES"
-  local i=0
-  for itype in "${TYPES[@]}"; do
-    i=$((i+1))
-    local regions
-    regions="$(echo "$avail" | jq -r ".data[\"$itype\"].regions_with_capacity_available[]?.name" 2>/dev/null || true)"
-    if [ -z "$regions" ]; then
-      printf "  [%d/%d] %-22s ${RED}✗ no capacity in any region${RESET}\n" "$i" "${#TYPES[@]}" "$itype"
-      continue
-    fi
-    for region in $regions; do
-      local body resp
-      body="$(jq -n --arg t "$itype" --arg r "$region" --arg n "$LAMBDA_SSH_KEY_NAME" \
-        '{region_name: $r, instance_type_name: $t, ssh_key_names: [$n], quantity: 1}')"
-      resp="$(lambda_api POST /instance-operations/launch -d "$body" 2>/dev/null || true)"
-      INSTANCE_ID="$(echo "$resp" | jq -r '.data.instance_ids[0]? // empty' 2>/dev/null || echo "")"
-      if [ -n "$INSTANCE_ID" ]; then
-        LAUNCHED_TYPE="$itype"
-        LAUNCHED_REGION="$region"
-        printf "  [%d/%d] %-22s ${GREEN}✓ launched in %s: %s${RESET}\n" \
-          "$i" "${#TYPES[@]}" "$itype" "$region" "$INSTANCE_ID"
-        return 0
-      fi
-    done
-  done
-  return 1
-}
+HOST=""
 
 cleanup() {
   rm -rf "$TEMP_SRC" >/dev/null 2>&1 || true
@@ -209,55 +174,34 @@ cleanup() {
   fi
   if [ "$AUTO_DELETE" = "true" ]; then
     warn "Terminating Lambda instance: $INSTANCE_ID ($LAUNCHED_TYPE in $LAUNCHED_REGION)"
-    local body
-    body="$(jq -n --arg id "$INSTANCE_ID" '{instance_ids: [$id]}')"
-    lambda_api POST /instance-operations/terminate -d "$body" >/dev/null 2>&1 || true
+    lambda_terminate "$INSTANCE_ID"
   else
     warn "AUTO_DELETE=false — leaving instance running: $INSTANCE_ID"
   fi
 }
 trap cleanup EXIT
 
-if ! launch_instance; then
-  error "Could not launch any Lambda instance — all types/regions exhausted."
-  echo "    Try widening LAMBDA_INSTANCE_TYPES or rerun later."
+if ! lambda_launch_instance "$LAMBDA_INSTANCE_TYPES" "LAMBDA_INSTANCE_TYPES"; then
+  error "Could not launch any Lambda instance — all configured types/regions exhausted."
   exit 1
 fi
+INSTANCE_ID="$LAMBDA_INSTANCE_ID"
+LAUNCHED_TYPE="$LAMBDA_LAUNCHED_TYPE"
+LAUNCHED_REGION="$LAMBDA_LAUNCHED_REGION"
 
 # ── Wait for instance active + SSH ready ────────────────────────
-echo "⏳ Waiting for instance to become active..."
-HOST=""
-for i in $(seq 1 60); do
-  details="$(lambda_api GET "/instances/$INSTANCE_ID" 2>/dev/null || echo '{}')"
-  status="$(echo "$details" | jq -r '.data.status // "unknown"')"
-  HOST="$(echo "$details" | jq -r '.data.ip // empty')"
-  printf "\r  ⏳ %d/60 (%-12s)..." "$i" "$status"
-  if [ "$status" = "active" ] && [ -n "$HOST" ]; then
-    printf "\n"
-    break
-  fi
-  if [ "$status" = "unhealthy" ] || [ "$status" = "terminated" ]; then
-    printf "\n"
-    error "Instance entered $status state during boot"
-    exit 1
-  fi
-  sleep 5
-done
-[ -n "$HOST" ] || { error "Instance never became active"; exit 1; }
+if ! lambda_wait_active "$INSTANCE_ID"; then
+  error "Instance never became active"
+  exit 1
+fi
+HOST="$LAMBDA_HOST"
 success "Instance active at $HOST"
 
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$LAMBDA_SSH_KEY_PATH")
 SSH_CMD=(ssh "${SSH_OPTS[@]}" "ubuntu@${HOST}")
 SCP_CMD=(scp "${SSH_OPTS[@]}")
 
-echo "⏳ Waiting for SSH to become reachable..."
-for i in $(seq 1 30); do
-  if "${SSH_CMD[@]}" -o ConnectTimeout=5 'echo ok' >/dev/null 2>&1; then
-    printf "  ${GREEN}✓ SSH ready (~%ds)${RESET}\n" $((i * 10))
-    break
-  fi
-  sleep 10
-done
+lambda_wait_ssh "$HOST" "$LAMBDA_SSH_KEY_PATH"
 
 # ── Verify GPU + apt deps (Lambda Stack already has CUDA + drivers) ──
 echo "⚙️  Verifying GPU + installing apt deps..."
