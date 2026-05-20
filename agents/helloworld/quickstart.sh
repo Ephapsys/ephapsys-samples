@@ -92,6 +92,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --gcp)        MODE="gcp"; shift ;;
     --local)      MODE="local"; shift ;;
+    --lambda)     MODE="lambda"; shift ;;
     --fresh)      FRESH_START=true; shift ;;
     --a2a-demo)       DEMO=true; shift ;;
     --a2a-demo-peers) DEMO=true; DEMO_PEERS="$2"; shift 2 ;;
@@ -99,9 +100,37 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if $DEMO && [[ "$MODE" == "lambda" ]]; then
+  printf "  ${YELLOW}!${RESET} --a2a-demo and --lambda cannot be combined.\n" >&2
+  printf "    The A2A peer cluster needs persistent local peers; Lambda is not supported.\n" >&2
+  printf "    Use --a2a-demo (local) or --lambda alone.\n" >&2
+  exit 1
+fi
+
 if $DEMO && [[ "$MODE" != "local" ]]; then
   warn "--a2a-demo currently runs only in local mode; ignoring --gcp."
   MODE="local"
+fi
+
+if [[ "$MODE" == "lambda" && ! -f ".env.lambda" && -f ".env.lambda.example" ]]; then
+  cp .env.lambda.example .env.lambda
+  banner
+  printf "  ${GREEN}+${RESET} Created ${BOLD}.env.lambda${RESET} from .env.lambda.example\n"
+  printf "\n"
+  separator
+  printf "\n"
+  printf "  Before continuing, edit ${BOLD}.env.lambda${RESET} and set:\n"
+  printf "\n"
+  printf "    ${WHITE}${BOLD}LAMBDA_API_KEY${RESET}         ${DIM}from https://cloud.lambdalabs.com/api-keys${RESET}\n"
+  printf "    ${WHITE}${BOLD}LAMBDA_SSH_KEY_NAME${RESET}    ${DIM}name of an SSH key registered in the Lambda dashboard${RESET}\n"
+  printf "    ${WHITE}${BOLD}LAMBDA_SSH_KEY_PATH${RESET}    ${DIM}local path to the matching .pem (chmod 400)${RESET}\n"
+  printf "\n"
+  separator
+  printf "\n"
+  printf "  Then rerun:\n"
+  printf "    ${BOLD}./quickstart.sh --lambda${RESET}\n"
+  printf "\n"
+  exit 0
 fi
 
 if $FRESH_START; then
@@ -121,7 +150,11 @@ if $FRESH_START; then
   success "Cleared state — starting fresh as ${DIM}${FRESH_TAG}${RESET}"
 fi
 
-info "Mode: ${BOLD}${MODE}${RESET}"
+if [[ "$MODE" == "lambda" ]]; then
+  info "Mode: ${BOLD}${MODE}${RESET} ${DIM}(modulation on Lambda Cloud, agent runs on persistent Lambda VM)${RESET}"
+else
+  info "Mode: ${BOLD}${MODE}${RESET}"
+fi
 
 # ── Helpers ─────────────────────────────────────────────────────
 save_env_var() {
@@ -207,6 +240,77 @@ resolve_existing_templates() {
   [[ -n "${MODEL_TEMPLATE_ID:-}" && -n "${AGENT_TEMPLATE_ID:-}" ]]
 }
 
+# ── Lambda runtime capacity preflight ──────────────────────────
+# Modulation on Lambda takes ~30 min and ~$1 of GPU time. If runtime
+# capacity (LAMBDA_RUNTIME_INSTANCE_TYPES) is exhausted, run.sh would
+# fail at Step 2 — wasting the modulation cost. Probe runtime capacity
+# BEFORE Step 1 and bail early so the user can widen the list first.
+#
+# Best-effort: skipped silently if jq or .env.lambda is missing, or if
+# the Lambda API doesn't respond. We never block on infrastructure we
+# can't reach — the goal is to catch the common exhausted-capacity case,
+# not to be a hard prerequisite.
+preflight_lambda_runtime_capacity() {
+  local lib="$SCRIPT_DIR/../../modulators/lib/lambda.sh"
+  if [ ! -f "$lib" ]; then
+    warn "Lambda lib not found at $lib; skipping runtime preflight."
+    return 0
+  fi
+  if [ ! -f "$SCRIPT_DIR/.env.lambda" ]; then
+    warn ".env.lambda missing; skipping runtime preflight."
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "jq not installed; skipping runtime preflight."
+    return 0
+  fi
+
+  step "0" "Lambda runtime capacity preflight"
+  info "Checking runtime capacity before kicking off ~30 min of modulation..."
+
+  set -a
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/.env.lambda"
+  set +a
+  # shellcheck disable=SC1091
+  source "$lib"
+
+  local types_csv="${LAMBDA_RUNTIME_INSTANCE_TYPES:-gpu_1x_a10,gpu_1x_a100,gpu_1x_a100_sxm4,gpu_1x_h100_pcie,gpu_1x_h100_sxm5,gpu_2x_h100_sxm5}"
+  local avail
+  avail="$(lambda_api GET /instance-types 2>/dev/null || true)"
+  if [ -z "$avail" ]; then
+    warn "Could not query Lambda /instance-types (LAMBDA_API_KEY missing/invalid?); skipping preflight."
+    return 0
+  fi
+
+  local found_type="" found_regions=""
+  IFS=',' read -ra TYPES <<< "$types_csv"
+  for itype in "${TYPES[@]}"; do
+    local regions
+    regions="$(echo "$avail" | jq -r ".data[\"$itype\"].regions_with_capacity_available[]?.name" 2>/dev/null | paste -sd ',' -)"
+    if [ -n "$regions" ]; then
+      found_type="$itype"
+      found_regions="$regions"
+      break
+    fi
+  done
+
+  if [ -n "$found_type" ]; then
+    success "Runtime capacity available: ${found_type} (regions: ${found_regions})"
+    return 0
+  fi
+
+  printf "\n  ${YELLOW}!${RESET} ${BOLD}No runtime capacity available across LAMBDA_RUNTIME_INSTANCE_TYPES.${RESET}\n" >&2
+  printf "    Modulation would burn ~30 min and ~\$1 of GPU time only to fail at Step 2.\n" >&2
+  printf "    Aborting before any spend.\n" >&2
+  lambda_print_available_capacity "$avail" "LAMBDA_RUNTIME_INSTANCE_TYPES" >&2
+  exit 1
+}
+
+if [[ "$MODE" == "lambda" ]]; then
+  preflight_lambda_runtime_capacity
+fi
+
 # ── Step 1: Resolve or bootstrap ────────────────────────────────
 if $FRESH_START; then
   step "1" "Registering model and agent templates"
@@ -216,6 +320,8 @@ if $FRESH_START; then
   export AGENT_TEMPLATE_NAME
   if [[ "$MODE" == "gcp" ]]; then
     ./push.sh --mode gcp --force-register --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
+  elif [[ "$MODE" == "lambda" ]]; then
+    ./push.sh --mode lambda --force-register --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
   else
     ./push.sh --mode local --force-register --label "${AGENT_TEMPLATE_NAME}" "${ARGS[@]+"${ARGS[@]}"}"
   fi
@@ -226,6 +332,8 @@ elif ! resolve_existing_templates; then
   printf "\n"
   if [[ "$MODE" == "gcp" ]]; then
     ./push.sh --mode gcp "${ARGS[@]+"${ARGS[@]}"}"
+  elif [[ "$MODE" == "lambda" ]]; then
+    ./push.sh --mode lambda "${ARGS[@]+"${ARGS[@]}"}"
   else
     ./push.sh --mode local "${ARGS[@]+"${ARGS[@]}"}"
   fi
@@ -249,6 +357,8 @@ separator
 
 if [[ "$MODE" == "gcp" ]]; then
   ./run.sh --gcp
+elif [[ "$MODE" == "lambda" ]]; then
+  ./run.sh --lambda
 else
   ./run.sh --local
 fi

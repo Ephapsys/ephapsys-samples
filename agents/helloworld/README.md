@@ -36,6 +36,59 @@ cp .env.gcp.example .env.gcp   # fill in GCP project settings
 ./quickstart.sh --gcp
 ```
 
+### Lambda Cloud mode
+
+Lambda is supported for **both** modulation (training) and runtime (the
+chatbot). The two phases use different GPUs by default — A100 for
+training, A10 for inference — so cost matches the workload.
+
+```bash
+cp .env.lambda.example .env.lambda   # fill in Lambda creds
+./quickstart.sh --lambda
+```
+
+`.env.lambda` needs three values from your Lambda Cloud account:
+
+| Variable              | Where to find it                                                |
+| --------------------- | --------------------------------------------------------------- |
+| `LAMBDA_API_KEY`      | <https://cloud.lambdalabs.com/api-keys> (one-time, ~1 min)      |
+| `LAMBDA_SSH_KEY_NAME` | Lambda dashboard → SSH Keys → the registered key name           |
+| `LAMBDA_SSH_KEY_PATH` | Local path to the matching `.pem` (run `chmod 400` on the file) |
+
+#### Two usage patterns
+
+| Pattern              | Commands                                  | When to use                                                |
+| -------------------- | ----------------------------------------- | ---------------------------------------------------------- |
+| **Modulate-only**    | `./push.sh --lambda` then `./run.sh --local` | Cheapest. ~30 min of A100 time, then runtime is free locally. |
+| **Full Lambda**      | `./quickstart.sh --lambda`                | Training + persistent agent VM on Lambda. Bills hourly.    |
+
+#### Cost reference (approximate, check Lambda for current pricing)
+
+| Instance       | $/hr   | Used for       |
+| -------------- | ------ | -------------- |
+| `gpu_1x_a10`     | ~$0.75 | Runtime (default) |
+| `gpu_1x_a100`    | ~$1.29 | Modulation (default) |
+| `gpu_1x_a100_sxm4` | ~$1.99 | Modulation fallback |
+| `gpu_1x_h100_pcie` | ~$2.49 | Modulation override |
+| `gpu_2x_h100_sxm5` | ~$5.98 | Fastest modulation |
+
+#### ⚠ Terminate the runtime VM when finished
+
+`run_lambda.sh` defaults to `AUTO_DELETE=false`, so the agent VM stays
+up after the script exits. The script prints a termination command in
+its footer; the dashboard at <https://cloud.lambdalabs.com/instances>
+also works.
+
+#### Known limitations
+
+- No managed ingress on Lambda — agent gets a raw public IP. BYO
+  firewall / DNS / TLS if you need to expose it.
+- Capacity is not guaranteed — the launcher falls back through the list
+  in `LAMBDA_INSTANCE_TYPES` / `LAMBDA_RUNTIME_INSTANCE_TYPES`. If none
+  have capacity, the script exits and you retry later.
+- `--a2a-demo` is not supported with `--lambda`. The peer cluster needs
+  persistent local peers; use `--a2a-demo` alone (local mode).
+
 ## Required Credentials
 
 Populate `.env` with:
@@ -71,10 +124,13 @@ scene shows and how to read the four-pane tmux layout.
 ```bash
 ./quickstart.sh              # bootstrap + run (local)
 ./quickstart.sh --gcp        # bootstrap + run (GCP brain)
+./quickstart.sh --lambda     # bootstrap + run (Lambda Cloud, persistent VM)
 ./quickstart.sh --fresh      # clear templates, re-bootstrap from scratch
 ./run.sh --local             # run locally (templates must exist)
 ./run.sh --gcp               # run on GCP (templates must exist)
+./run.sh --lambda            # run on Lambda Cloud (templates must exist; bills hourly)
 ./push.sh                    # bootstrap templates only
+./push.sh --lambda           # bootstrap + modulate on Lambda Cloud
 ./push.sh --no-idempotent    # full modulation instead of idempotent publish
 ```
 
@@ -97,3 +153,4 @@ scene shows and how to read the four-pane tmux layout.
 | `push.sh`             | Template bootstrap                |
 | `run_local.sh`        | Local runtime helper              |
 | `run_gcp.sh`          | GCP deployer with VM reuse        |
+| `run_lambda.sh`       | Lambda Cloud runtime deployer (persistent VM, billed hourly) |

@@ -7,16 +7,19 @@ Usage:
   ./run.sh
   ./run.sh --local
   ./run.sh --gcp [other run_gcp.sh flags]
+  ./run.sh --lambda
 
 Examples:
   ./run.sh
   ./run.sh --gcp
   ./run.sh --gcp --gpu --gpu-type t4
+  ./run.sh --lambda
 
 Notes:
   no flag defaults to local and runs preflight automatically, then launches ./run_local.sh
   --local does the same explicitly
   --gcp dispatches to ./run_gcp.sh
+  --lambda dispatches to ./run_lambda.sh (requires .env.lambda; VM bills hourly)
 EOF
 }
 
@@ -28,7 +31,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)
       if [[ -n "$MODE" && "$MODE" != "local" ]]; then
-        echo "[ERROR] Choose only one of --local or --gcp." >&2
+        echo "[ERROR] Choose only one of --local, --gcp, or --lambda." >&2
         exit 1
       fi
       MODE="local"
@@ -36,10 +39,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --gcp)
       if [[ -n "$MODE" && "$MODE" != "gcp" ]]; then
-        echo "[ERROR] Choose only one of --local or --gcp." >&2
+        echo "[ERROR] Choose only one of --local, --gcp, or --lambda." >&2
         exit 1
       fi
       MODE="gcp"
+      shift
+      ;;
+    --lambda)
+      if [[ -n "$MODE" && "$MODE" != "lambda" ]]; then
+        echo "[ERROR] Choose only one of --local, --gcp, or --lambda." >&2
+        exit 1
+      fi
+      MODE="lambda"
       shift
       ;;
     -h|--help)
@@ -78,5 +89,11 @@ case "$MODE" in
       exec ./run_gcp.sh "${ARGS[@]}"
     fi
     exec ./run_gcp.sh
+    ;;
+  lambda)
+    if [[ "$ARGS_COUNT" -gt 0 ]]; then
+      exec ./run_lambda.sh "${ARGS[@]}"
+    fi
+    exec ./run_lambda.sh
     ;;
 esac
