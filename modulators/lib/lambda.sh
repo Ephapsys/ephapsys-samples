@@ -53,6 +53,8 @@ lambda_api() {
 #   $1 — comma-separated instance type fallback list
 #   $2 — name of the env var the caller used (for the failure hint;
 #        defaults to LAMBDA_INSTANCE_TYPES if omitted)
+#   $3 — instance name to set on the launched VM (shows up in the Lambda
+#        dashboard; defaults to "ephapsys-instance-<timestamp>")
 # Side effects: sets LAMBDA_INSTANCE_ID / LAMBDA_LAUNCHED_TYPE / LAMBDA_LAUNCHED_REGION
 # Returns 0 on success, 1 if no capacity in any type/region. On failure
 # also prints a hint listing every instance type that currently has
@@ -60,6 +62,7 @@ lambda_api() {
 lambda_launch_instance() {
   local types_csv="$1"
   local env_var_name="${2:-LAMBDA_INSTANCE_TYPES}"
+  local instance_name="${3:-ephapsys-instance-$(date +%Y%m%d-%H%M%S)}"
   echo "🛰  Searching Lambda capacity across instance types..."
   local avail
   avail="$(lambda_api GET /instance-types 2>/dev/null || true)"
@@ -80,15 +83,15 @@ lambda_launch_instance() {
     fi
     for region in $regions; do
       local body resp
-      body="$(jq -n --arg t "$itype" --arg r "$region" --arg n "$LAMBDA_SSH_KEY_NAME" \
-        '{region_name: $r, instance_type_name: $t, ssh_key_names: [$n], quantity: 1}')"
+      body="$(jq -n --arg t "$itype" --arg r "$region" --arg n "$LAMBDA_SSH_KEY_NAME" --arg nm "$instance_name" \
+        '{region_name: $r, instance_type_name: $t, ssh_key_names: [$n], quantity: 1, name: $nm}')"
       resp="$(lambda_api POST /instance-operations/launch -d "$body" 2>/dev/null || true)"
       LAMBDA_INSTANCE_ID="$(echo "$resp" | jq -r '.data.instance_ids[0]? // empty' 2>/dev/null || echo "")"
       if [ -n "$LAMBDA_INSTANCE_ID" ]; then
         LAMBDA_LAUNCHED_TYPE="$itype"
         LAMBDA_LAUNCHED_REGION="$region"
-        printf "  [%d/%d] %-22s ${GREEN}✓ launched in %s: %s${RESET}\n" \
-          "$i" "${#TYPES[@]}" "$itype" "$region" "$LAMBDA_INSTANCE_ID"
+        printf "  [%d/%d] %-22s ${GREEN}✓ launched in %s: %s${RESET} (name: %s)\n" \
+          "$i" "${#TYPES[@]}" "$itype" "$region" "$LAMBDA_INSTANCE_ID" "$instance_name"
         return 0
       fi
     done
@@ -137,12 +140,56 @@ lambda_print_available_capacity() {
     "$env_var_name"
 }
 
+# ── Look up an existing instance (for --attach flows) ──────────
+# Args: $1 — instance id
+# Side effects: sets LAMBDA_INSTANCE_ID / LAMBDA_LAUNCHED_TYPE /
+#               LAMBDA_LAUNCHED_REGION / LAMBDA_HOST (host may be empty
+#               if instance is still booting — caller can lambda_wait_active).
+# Returns 0 on success, 1 if not found or in terminated/unhealthy state.
+lambda_fetch_instance() {
+  local instance_id="$1"
+  echo "🔍 Looking up Lambda instance $instance_id..."
+  local resp status itype region ip
+  resp="$(lambda_api GET "/instances/$instance_id" 2>/dev/null || true)"
+  if [ -z "$resp" ]; then
+    printf "${RED}[ERROR]${RESET} Failed to query Lambda /instances/%s — check LAMBDA_API_KEY\n" "$instance_id" >&2
+    return 1
+  fi
+  status="$(echo "$resp" | jq -r '.data.status // empty' 2>/dev/null || echo "")"
+  if [ -z "$status" ]; then
+    printf "${RED}[ERROR]${RESET} Instance %s not found (check the ID).\n" "$instance_id" >&2
+    return 1
+  fi
+  case "$status" in
+    terminated|terminating|unhealthy)
+      printf "${RED}[ERROR]${RESET} Instance %s is in %s state — cannot attach.\n" \
+        "$instance_id" "$status" >&2
+      return 1
+      ;;
+  esac
+  itype="$(echo "$resp" | jq -r '.data.instance_type.name // "unknown"' 2>/dev/null)"
+  region="$(echo "$resp" | jq -r '.data.region.name // "unknown"' 2>/dev/null)"
+  ip="$(echo "$resp" | jq -r '.data.ip // empty' 2>/dev/null)"
+  LAMBDA_INSTANCE_ID="$instance_id"
+  LAMBDA_LAUNCHED_TYPE="$itype"
+  LAMBDA_LAUNCHED_REGION="$region"
+  LAMBDA_HOST="$ip"
+  printf "  ${GREEN}✓ attached to %s (%s in %s, status: %s)${RESET}\n" \
+    "$instance_id" "$itype" "$region" "$status"
+  return 0
+}
+
 # ── Wait for instance active ───────────────────────────────────
-# Args: $1 — instance id, $2 — max iterations (default 60, 5s each)
+# Args: $1 — instance id, $2 — max iterations (default 144, 5s each =
+#                                              12 min ceiling).
+# Lambda instances typically reach active in 2-5 min, but cold-region
+# launches sometimes need 8-10 min — the previous 5 min ceiling was
+# too aggressive and produced false-fails on instances that were just
+# slow to boot. Override via the second arg if needed.
 # Side effects: sets LAMBDA_HOST to the instance public IP.
 # Returns 0 on active+IP, 1 on timeout or unhealthy/terminated state.
 lambda_wait_active() {
-  local instance_id="$1" max_iters="${2:-60}"
+  local instance_id="$1" max_iters="${2:-144}"
   echo "⏳ Waiting for instance to become active..."
   LAMBDA_HOST=""
   for i in $(seq 1 "$max_iters"); do

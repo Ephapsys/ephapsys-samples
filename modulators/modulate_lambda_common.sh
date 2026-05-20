@@ -181,7 +181,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! lambda_launch_instance "$LAMBDA_INSTANCE_TYPES" "LAMBDA_INSTANCE_TYPES"; then
+LAMBDA_INSTANCE_NAME="${LAMBDA_INSTANCE_NAME:-ephapsys-${MODULATOR_KIND}-modulate-$(date +%Y%m%d-%H%M%S)}"
+if ! lambda_launch_instance "$LAMBDA_INSTANCE_TYPES" "LAMBDA_INSTANCE_TYPES" "$LAMBDA_INSTANCE_NAME"; then
   error "Could not launch any Lambda instance — all configured types/regions exhausted."
   exit 1
 fi

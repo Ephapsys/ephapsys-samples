@@ -14,12 +14,15 @@ Examples:
   ./run.sh --gcp
   ./run.sh --gcp --gpu --gpu-type t4
   ./run.sh --lambda
+  ./run.sh --lambda --attach <instance_id>   # reuse existing VM
 
 Notes:
   no flag defaults to local and runs preflight automatically, then launches ./run_local.sh
   --local does the same explicitly
   --gcp dispatches to ./run_gcp.sh
   --lambda dispatches to ./run_lambda.sh (requires .env.lambda; VM bills hourly)
+  --lambda --attach <id> reuses an existing Lambda instance instead of launching a new one
+    (useful for: resuming after a failed run, or using a manually-provisioned VM)
 EOF
 }
 
