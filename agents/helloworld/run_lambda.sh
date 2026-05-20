@@ -29,7 +29,12 @@
 # Optional:
 #   LAMBDA_RUNTIME_INSTANCE_TYPES   A10-first fallback list (default below)
 #   LAMBDA_API_BASE                 API base override
+#   LAMBDA_ATTACH_INSTANCE          Existing instance id to reuse (alt. to --attach)
 #
+# Flags:
+#   --attach <instance_id>          Reuse an existing Lambda instance instead
+#                                   of provisioning a new one. Useful for
+#                                   recovering from a failed run, or BYO VM.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,6 +50,41 @@ info()    { printf "${BLUE}[INFO]${RESET} %s\n" "$*"; }
 success() { printf "${GREEN}[OK]${RESET} %s\n" "$*"; }
 warn()    { printf "${YELLOW}[WARN]${RESET} %s\n" "$*" >&2; }
 error()   { printf "${RED}[ERROR]${RESET} %s\n" "$*" >&2; }
+
+# ── Parse args ──────────────────────────────────────────────────
+ATTACH_INSTANCE_ID="${LAMBDA_ATTACH_INSTANCE:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --attach)
+      ATTACH_INSTANCE_ID="${2:-}"
+      [ -n "$ATTACH_INSTANCE_ID" ] || { error "--attach requires an instance id"; exit 1; }
+      shift 2
+      ;;
+    --attach=*)
+      ATTACH_INSTANCE_ID="${1#--attach=}"
+      shift
+      ;;
+    -h|--help)
+      cat <<EOF
+Usage: ./run_lambda.sh [--attach <instance_id>]
+
+Provisions a new Lambda Cloud VM and runs the HelloWorld agent on it.
+
+Options:
+  --attach <id>   Reuse an existing instance instead of launching a new one.
+                  Useful for: (a) resuming after a failed run where the VM
+                  is still up; (b) using a manually-provisioned VM.
+                  Can also be set via LAMBDA_ATTACH_INSTANCE env var.
+EOF
+      exit 0
+      ;;
+    *)
+      error "Unknown argument: $1"
+      echo "    See ./run_lambda.sh --help"
+      exit 1
+      ;;
+  esac
+done
 
 # ── Load .env and .env.lambda ───────────────────────────────────
 if [ ! -f ".env" ]; then
@@ -107,14 +147,32 @@ fi
 source "$LIB_LAMBDA"
 
 # ── Cost warning ────────────────────────────────────────────────
-warn "Lambda Cloud bills by the hour — VM stays up after this script exits."
-warn "Termination command is printed in the footer; please don't forget."
+if [ -n "$ATTACH_INSTANCE_ID" ]; then
+  info "Attach mode: reusing existing instance ${ATTACH_INSTANCE_ID}."
+  info "This script will NOT terminate the VM on exit; the VM is yours to manage."
+else
+  warn "Lambda Cloud bills by the hour — VM stays up after this script exits."
+  warn "Termination command is printed in the footer; please don't forget."
+fi
 echo
 
-# ── Launch instance ─────────────────────────────────────────────
-if ! lambda_launch_instance "$LAMBDA_RUNTIME_INSTANCE_TYPES" "LAMBDA_RUNTIME_INSTANCE_TYPES"; then
-  error "Could not launch any Lambda instance — all configured types/regions exhausted."
-  exit 1
+# ── Launch or attach ────────────────────────────────────────────
+# LAMBDA_PRE_EXISTING_VM=1 means the user gave us the VM (via --attach or
+# LAMBDA_ATTACH_INSTANCE). The footer suppresses the termination command
+# in that case — destroying a VM the user pre-launched would be surprising.
+LAMBDA_PRE_EXISTING_VM=0
+if [ -n "$ATTACH_INSTANCE_ID" ]; then
+  if ! lambda_fetch_instance "$ATTACH_INSTANCE_ID"; then
+    error "Could not attach to instance $ATTACH_INSTANCE_ID."
+    exit 1
+  fi
+  LAMBDA_PRE_EXISTING_VM=1
+else
+  LAMBDA_INSTANCE_NAME="${LAMBDA_INSTANCE_NAME:-ephapsys-helloworld-runtime-$(date +%Y%m%d-%H%M%S)}"
+  if ! lambda_launch_instance "$LAMBDA_RUNTIME_INSTANCE_TYPES" "LAMBDA_RUNTIME_INSTANCE_TYPES" "$LAMBDA_INSTANCE_NAME"; then
+    error "Could not launch any Lambda instance — all configured types/regions exhausted."
+    exit 1
+  fi
 fi
 INSTANCE_ID="$LAMBDA_INSTANCE_ID"
 LAUNCHED_TYPE="$LAMBDA_LAUNCHED_TYPE"
@@ -128,11 +186,22 @@ LAUNCHED_REGION="$LAMBDA_LAUNCHED_REGION"
 # up if they don't want to debug.
 print_termination_hint() {
   [ -n "$INSTANCE_ID" ] || return 0
+  if [ "${LAMBDA_PRE_EXISTING_VM:-0}" = "1" ]; then
+    printf "\n${BLUE}ℹ  Attached VM %s (%s in %s) is yours — left running as expected.${RESET}\n" \
+      "$INSTANCE_ID" "$LAUNCHED_TYPE" "$LAUNCHED_REGION" >&2
+    if [ -n "${HOST:-}" ]; then
+      printf "    SSH in to debug:\n" >&2
+      printf "      ssh -i %s ubuntu@%s\n" "$LAMBDA_SSH_KEY_PATH" "$HOST" >&2
+    fi
+    printf "    Retry with: ./run.sh --lambda --attach %s\n" "$INSTANCE_ID" >&2
+    return 0
+  fi
   printf "\n${YELLOW}⚠  Lambda VM left running: %s (%s in %s).${RESET}\n" \
     "$INSTANCE_ID" "$LAUNCHED_TYPE" "$LAUNCHED_REGION" >&2
   if [ -n "${HOST:-}" ]; then
     printf "    SSH in to debug:\n" >&2
     printf "      ssh -i %s ubuntu@%s\n" "$LAMBDA_SSH_KEY_PATH" "$HOST" >&2
+    printf "    Or resume with: ./run.sh --lambda --attach %s\n" "$INSTANCE_ID" >&2
   fi
   printf "    Or terminate the VM:\n" >&2
   printf "      curl -sS -u \"\$LAMBDA_API_KEY:\" -X POST \\\\\n" >&2
@@ -232,6 +301,9 @@ LAUNCH_EOF
 # `tmux new-session -d -s` matches the convention used by demo/lib.sh
 # (TMUX_SESSION variable, same `tmux attach -t` pattern in the footer).
 info "Starting agent in tmux session '$TMUX_SESSION'..."
+# Kill any pre-existing session under the same name so re-runs (including
+# --attach against a VM that already has an agent running) are idempotent.
+"${SSH_CMD[@]}" "tmux kill-session -t $TMUX_SESSION 2>/dev/null || true"
 "${SSH_CMD[@]}" "tmux new-session -d -s $TMUX_SESSION 'bash $REMOTE_BASE_DIR/launch.sh'"
 sleep 2
 if ! "${SSH_CMD[@]}" "tmux has-session -t $TMUX_SESSION 2>/dev/null"; then
@@ -259,6 +331,20 @@ Attach to the tmux session (Ctrl-B then d to detach):
 Stop the bot (keeps the VM up):
   ssh -i $KEY_PATH_QUOTED ubuntu@$HOST 'tmux kill-session -t $TMUX_SESSION'
 
+EOF
+
+if [ "$LAMBDA_PRE_EXISTING_VM" = "1" ]; then
+  cat <<EOF
+${BLUE}ℹ  VM was attached (--attach), not launched by this script.${RESET}
+   Termination is your call — only terminate if you're done with the VM:
+     curl -sS -u "\$LAMBDA_API_KEY:" -X POST \\
+       ${LAMBDA_API_BASE:-https://cloud.lambdalabs.com/api/v1}/instance-operations/terminate \\
+       -H 'Content-Type: application/json' \\
+       -d '{"instance_ids":["$INSTANCE_ID"]}'
+
+EOF
+else
+  cat <<EOF
 ${YELLOW}⚠  TERMINATE THE VM when finished (Lambda is billing by the hour):${RESET}
   curl -sS -u "\$LAMBDA_API_KEY:" -X POST \\
     ${LAMBDA_API_BASE:-https://cloud.lambdalabs.com/api/v1}/instance-operations/terminate \\
@@ -267,3 +353,4 @@ ${YELLOW}⚠  TERMINATE THE VM when finished (Lambda is billing by the hour):${R
   # or via the dashboard: https://cloud.lambdalabs.com/instances
 
 EOF
+fi
