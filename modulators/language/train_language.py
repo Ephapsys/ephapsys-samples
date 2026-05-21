@@ -187,6 +187,41 @@ def main():
         AutoModelForCausalLM,
     )
 
+    def _make_optimizer(params, lr, memory_efficient):
+        if memory_efficient:
+            try:
+                import bitsandbytes as bnb
+            except ImportError as e:
+                raise RuntimeError(
+                    "--memory-efficient requires bitsandbytes. "
+                    "Install with: pip install bitsandbytes"
+                ) from e
+            return bnb.optim.AdamW8bit(params, lr=lr)
+        return torch.optim.AdamW(params, lr=lr)
+
+    def _trainable_ecm_params(model):
+        trainable = []
+        for name, p in model.named_parameters():
+            is_ecm = "lambda_ecm" in name
+            p.requires_grad = is_ecm
+            if is_ecm:
+                trainable.append(p)
+        if not trainable:
+            raise RuntimeError(
+                "No lambda_ecm parameters found — ECM must be injected before training."
+            )
+        return trainable
+
+    def _set_memory_efficient_training(model, enable, memory_efficient):
+        if not memory_efficient:
+            return
+        if enable:
+            model.gradient_checkpointing_enable()
+            model.config.use_cache = False
+        else:
+            model.gradient_checkpointing_disable()
+            model.config.use_cache = True
+
     best_score, best_metrics, best_variant, best_stream = None, {}, {"variant": "additive"}, []
     start_time = time.time()  # Track total runtime
     parser = argparse.ArgumentParser()
@@ -202,10 +237,27 @@ def main():
         help="1=auto-call /modulation/start (default), 0=manual mode (UI must start job)")
     parser.add_argument("--verbose", action="store_true", default=os.getenv("TRAINER_VERBOSE", "0") == "1",
         help="Show debug output")
+    parser.add_argument("--memory-efficient", action="store_true",
+        default=os.getenv("MEMORY_EFFICIENT", "").lower() in ("1", "true", "yes"),
+        help="Enable bf16 weights, gradient checkpointing, and 8-bit AdamW (bitsandbytes). "
+             "Reduces VRAM ~3x for training; use on <12 GB GPUs.")
+    parser.add_argument("--freeze-base", action="store_true",
+        default=os.getenv("FREEZE_BASE", "").lower() in ("1", "true", "yes"),
+        help="Freeze base model weights and train only lambda_ecm parameters. "
+             "Drastically reduces trainable params and VRAM.")
     args = parser.parse_args()
     VERBOSE = args.verbose
     # Merge old flag into the new one
     args.train = bool(args.train or args.train_mode)
+
+    if args.memory_efficient:
+        try:
+            import bitsandbytes  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                "--memory-efficient requires bitsandbytes. "
+                "Install with: pip install bitsandbytes"
+            ) from e
 
     if not args.api_key:
         raise RuntimeError("API token missing. Provide --api_key or set AOC_MODULATION_TOKEN in the environment")
@@ -402,17 +454,43 @@ def main():
     config = AutoConfig.from_pretrained(local_model_dir, local_files_only=True)
     tokenizer = AutoTokenizer.from_pretrained(local_model_dir, local_files_only=True)
 
+    load_dtype = torch.bfloat16 if args.memory_efficient else None
+    if args.memory_efficient:
+        print()
+        print(f"  {GOLD}━━━ MEMORY_EFFICIENT mode enabled ━━━{RESET}")
+        print(f"  {DIM}Reduces VRAM ~3x so training fits on <12 GB GPUs (e.g. RTX 4070 8 GB).{RESET}")
+        print(f"  {DIM}Enable via:  --memory-efficient   OR   MEMORY_EFFICIENT=true{RESET}")
+        print()
+        print(f"  {BOLD}Active optimizations:{RESET}")
+        print(f"    {GREEN}+{RESET} {BOLD}bf16 weights{RESET}           {DIM}halves model + activation memory (3 GB → 1.5 GB for 0.8B model){RESET}")
+        print(f"    {GREEN}+{RESET} {BOLD}gradient checkpointing{RESET} {DIM}re-computes activations in backward pass instead of storing{RESET}")
+        print(f"    {GREEN}+{RESET} {BOLD}8-bit AdamW{RESET}            {DIM}stores optimizer state in int8 via bitsandbytes{RESET}")
+        print()
+        if args.freeze_base:
+            print(f"  {GREEN}+ --freeze-base active:{RESET} {DIM}only lambda_ecm params train — optimizer state ~6 GB → ~1.5 GB.{RESET}")
+        else:
+            print(f"  {YELLOW}!{RESET} {BOLD}--freeze-base not set.{RESET} {DIM}Full base model is trainable; optimizer state stays large.{RESET}")
+            print(f"     {DIM}For the advertised ~3x VRAM reduction, add {BOLD}--freeze-base{RESET}{DIM} (or FREEZE_BASE=true).{RESET}")
+        print()
+        print(f"  {YELLOW}Tradeoffs:{RESET} {DIM}~15-25% slower per step (grad ckpt); minor precision drift from bf16.{RESET}")
+        print(f"  {YELLOW}Requires:{RESET}  {DIM}bitsandbytes (pip install bitsandbytes), CUDA GPU, bf16-compatible model.{RESET}")
+        print()
+    else:
+        hint = "--memory-efficient" + ("" if args.freeze_base else " --freeze-base")
+        env_hint = "MEMORY_EFFICIENT=true" + ("" if args.freeze_base else " FREEZE_BASE=true")
+        print(f"  {DIM}[HINT] Running in fp32. If OOM on GPU, try {hint} (or {env_hint}){RESET}")
+
     # Detect model type
     if config.model_type in ["t5", "bart", "mbart", "pegasus", "mt5"]:
         print(f"  {BLUE}>{RESET} Detected Seq2Seq model: {BOLD}{config.model_type}{RESET}")
         model = with_spinner("Loading model weights",
-            lambda: AutoModelForSeq2SeqLM.from_pretrained(local_model_dir, local_files_only=True).to(device))
+            lambda: AutoModelForSeq2SeqLM.from_pretrained(local_model_dir, local_files_only=True, torch_dtype=load_dtype).to(device))
         encoder = model.get_encoder()
         is_seq2seq = True
     else:
         print(f"  {BLUE}>{RESET} Detected Causal LM: {BOLD}{config.model_type}{RESET}")
         model = with_spinner("Loading model weights",
-            lambda: AutoModelForCausalLM.from_pretrained(local_model_dir, local_files_only=True).to(device))
+            lambda: AutoModelForCausalLM.from_pretrained(local_model_dir, local_files_only=True, torch_dtype=load_dtype).to(device))
         encoder = model  # causal LMs have no separate encoder
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = model.config.eos_token_id
@@ -545,7 +623,13 @@ def main():
             # --- Optimizer + (optional) loss (seq2seq uses model.loss; causal uses CE through labels) ---
             print("[TRAIN] Training enabled in manual mode — running gradient updates per step.")
             ds, sample_at = build_training_ds(ds_name, ds_config, ds_split)
-            optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+            _set_memory_efficient_training(model, enable=True, memory_efficient=args.memory_efficient)
+            if args.freeze_base:
+                trainable = _trainable_ecm_params(model)
+                print(f"  {DIM}Training {sum(p.numel() for p in trainable):,} ECM params (base model frozen){RESET}")
+            else:
+                trainable = list(model.parameters())
+            optimizer = _make_optimizer(trainable, lr=1e-4, memory_efficient=args.memory_efficient)
             model.train()
 
             for step_idx in range(steps):
@@ -647,6 +731,8 @@ def main():
                     report,
                     step=step_idx + 1,
                 )
+
+            _set_memory_efficient_training(model, enable=False, memory_efficient=args.memory_efficient)
 
         else:
             # --- Run evaluation with streaming metrics (includes language-quality KPIs) ---
@@ -805,7 +891,14 @@ def main():
 
                 print(f"[TRAIN] Training enabled for trial {trial_num} — running gradient updates per step.")
                 ds, sample_at = build_training_ds(ds_name, ds_config, ds_split)
-                optimizer = torch.optim.AdamW(model_trial.parameters(), lr=1e-4)
+                _set_memory_efficient_training(model_trial, enable=True, memory_efficient=args.memory_efficient)
+                if args.freeze_base:
+                    trainable = _trainable_ecm_params(model_trial)
+                    if trial_num == 1:
+                        print(f"  {DIM}Training {sum(p.numel() for p in trainable):,} ECM params per trial (base model frozen){RESET}")
+                else:
+                    trainable = list(model_trial.parameters())
+                optimizer = _make_optimizer(trainable, lr=1e-4, memory_efficient=args.memory_efficient)
                 model_trial.train()
 
                 for step_idx in range(steps):
@@ -906,6 +999,8 @@ def main():
                         report,
                         step=step_idx + 1,
                     )
+
+                _set_memory_efficient_training(model_trial, enable=False, memory_efficient=args.memory_efficient)
 
             else:
                 # --- Run evaluation with streaming metrics (includes language-quality KPIs) ---
