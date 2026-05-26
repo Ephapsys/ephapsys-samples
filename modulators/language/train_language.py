@@ -336,7 +336,21 @@ def main():
                 "split": os.getenv("AOC_DATASET_SPLIT", "train[:1%]"),
             }
 
-        max_steps_per_trial = int(os.getenv("AOC_STEPS_PER_TRIAL", "10"))
+        # maxSteps precedence (#119): an explicitly-set AOC_STEPS_PER_TRIAL env
+        # wins (headless/CI override), else the operator's UI-configured value
+        # from the template's DesiredModulation.kpi.maxSteps, else the built-in
+        # default. Previously this always used the env default and the
+        # start_job() below then overwrote the UI-configured value (e.g. 500→10),
+        # making indispensability convergence impossible.
+        _env_steps = os.getenv("AOC_STEPS_PER_TRIAL")
+        _ui_steps = ((tpl_existing.get("DesiredModulation") or {}).get("kpi") or {}).get("maxSteps")
+        if _env_steps is not None:
+            max_steps_per_trial = int(_env_steps)
+        elif _ui_steps:
+            max_steps_per_trial = int(_ui_steps)
+            print(f"[INFO] Using UI-configured maxSteps={max_steps_per_trial} from template DesiredModulation")
+        else:
+            max_steps_per_trial = 10
         search_budget = int(os.getenv("AOC_SEARCH_BUDGET", "2"))
 
         # Governance-mode-aware variant restriction.
