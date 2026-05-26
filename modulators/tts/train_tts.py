@@ -104,12 +104,25 @@ def main():
             "config": "clean",
             "split": "validation[:1%]",
         }
+        # maxSteps precedence (#119): explicit AOC_STEPS_PER_TRIAL env
+        # (headless/CI override) > UI-configured DesiredModulation.kpi.maxSteps
+        # > built-in default. Previously this hardcoded 10, so start_job() below
+        # overwrote any UI-configured value.
+        _env_steps = os.getenv("AOC_STEPS_PER_TRIAL")
+        _ui_steps = ((tpl_existing.get("DesiredModulation") or {}).get("kpi") or {}).get("maxSteps")
+        if _env_steps is not None:
+            max_steps_per_trial = int(_env_steps)
+        elif _ui_steps:
+            max_steps_per_trial = int(_ui_steps)
+            print(f"[INFO] Using UI-configured maxSteps={max_steps_per_trial} from template DesiredModulation")
+        else:
+            max_steps_per_trial = 10
         kpi = {
             "targets": [
                 {"name": "wer", "direction": "min", "weight": 1},
                 {"name": "mos", "direction": "max", "weight": 1},
             ],
-            "maxSteps": 10,
+            "maxSteps": max_steps_per_trial,
         }
         search = {
             "algo": "bayes",
