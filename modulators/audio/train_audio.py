@@ -53,6 +53,8 @@ def main():
     parser.add_argument("--api_key", type=str, default=os.getenv("AOC_MODULATION_TOKEN", ""))
     parser.add_argument("--model_template_id", type=str, required=True)   # <- still required
     parser.add_argument("--outdir", type=str, default="./out")
+    parser.add_argument("--auto_start", type=int, default=int(os.getenv("AUTO_START", "1")),
+        help="1=auto-call /modulation/start (default), 0=manual mode (UI must start job)")
     args = parser.parse_args()
 
     if not args.api_key:
@@ -66,8 +68,79 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
     print(f"[INFO] Run directory created: {run_dir}")
 
-    # --- Setup client + wait for job ---
+    # --- Setup client ---
     mc = ModulatorClient(args.base_url, args.api_key)
+
+    if args.auto_start:
+        print("[INFO] Auto-starting modulation job with full config...")
+
+        # --- Check for existing running job ---
+        tpl_existing = mc.get_template_or_die(args.model_template_id)
+        mod = tpl_existing.get("Modulation") or {}
+        if mod.get("status") == "running":
+            old_job = mod.get("job_id")
+            print(f"[WARN] Previous job still running (job_id={old_job}). Stopping it first...")
+            try:
+                mc.stop_job(job_id=old_job, model_template_id=args.model_template_id)
+                tpl_existing = mc.get_template_or_die(args.model_template_id)
+                mod = tpl_existing.get("Modulation")
+            except Exception as e:
+                print(f"[WARN] Failed to stop old job cleanly: {e}")
+                exit(1)
+
+        # --- Define dataset, KPIs, search config ---
+        dataset = {
+            "kind": "repo",
+            "source": "external",
+            "name": os.getenv("AOC_DATASET_NAME", "superb"),
+            "config": os.getenv("AOC_DATASET_CONFIG", "ks"),
+            "split": os.getenv("AOC_DATASET_SPLIT", "test[:1%]"),
+        }
+        # maxSteps precedence (#119): explicit AOC_STEPS_PER_TRIAL env
+        # (headless/CI override) > UI-configured DesiredModulation.kpi.maxSteps
+        # > built-in default.
+        _env_steps = os.getenv("AOC_STEPS_PER_TRIAL")
+        _ui_steps = ((tpl_existing.get("DesiredModulation") or {}).get("kpi") or {}).get("maxSteps")
+        if _env_steps is not None:
+            max_steps_per_trial = int(_env_steps)
+        elif _ui_steps:
+            max_steps_per_trial = int(_ui_steps)
+            print(f"[INFO] Using UI-configured maxSteps={max_steps_per_trial} from template DesiredModulation")
+        else:
+            max_steps_per_trial = 10
+        kpi = {
+            "targets": [
+                {"name": "accuracy", "direction": "max", "weight": 1},
+            ],
+            "maxSteps": max_steps_per_trial,
+        }
+        search = {
+            "algo": "bayes",
+            "budget": 1,
+            "parallel": 1,
+            "multi_objective": True,
+            "space": {
+                "epsilon": {"low": 0.0, "high": 2.0},
+                "lambda0": {"low": 0.0, "high": 0.5},
+                "phi": ["identity", "relu", "tanh", "silu", "gelu"],
+                "ecm_init": ["transpose", "identity", "random"],
+                "variant": ["additive", "multiplicative"],
+            },
+        }
+
+        # --- Start a fresh job ---
+        mc.start_job(
+            args.model_template_id,
+            variant="additive",
+            kpi=kpi,
+            mode="auto",
+            dataset=dataset,
+            search=search,
+        )
+    else:
+        print("[INFO] AUTO_START=0 → skipping /modulation/start, waiting for UI job...")
+
+    # --- Block until job_id is available ---
     tpl, job_id = mc.wait_for_job_id(args.model_template_id)
     recipe = tpl.get("DesiredModulation") or {}
 
