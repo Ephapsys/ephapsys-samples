@@ -269,7 +269,7 @@ def main():
                 ds_split=ds_split, 
                 steps=steps,
                 provider="huggingface",
-                provider_token="***REMOVED***"
+                provider_token=os.getenv("HF_TOKEN", "")
             ):
                 last = update
 
