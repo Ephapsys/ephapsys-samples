@@ -227,7 +227,7 @@ rsync -a --delete \
 # ── Upload to instance ──────────────────────────────────────────
 echo "📂 Copying modulator sample files to instance..."
 "${SSH_CMD[@]}" "mkdir -p $REMOTE_BASE_DIR $REMOTE_DIR"
-"${SCP_CMD[@]}" -r -C "$TEMP_SRC/modulator/." "ubuntu@${HOST}:$REMOTE_DIR/" 2>/dev/null
+"${SCP_CMD[@]}" -r -C "$TEMP_SRC/modulator/"* "ubuntu@${HOST}:$REMOTE_DIR/"
 [ -f "$TEMP_SRC/common/modulate_local_common.sh" ] && \
   "${SCP_CMD[@]}" -C "$TEMP_SRC/common/modulate_local_common.sh" "ubuntu@${HOST}:$REMOTE_BASE_DIR/modulate_local_common.sh" 2>/dev/null
 [ -f "$TEMP_SRC/common/requirements.lambda.txt" ] && \

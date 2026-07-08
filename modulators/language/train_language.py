@@ -1090,7 +1090,7 @@ def main():
             # Configurations that memorize the training data will look great
             # on the in-distribution training stream but blow up on this
             # held-out PPL — exactly the failure mode we want AOC to avoid.
-            held_out_ds_name   = "wikitext"
+            held_out_ds_name   = "Salesforce/wikitext"  # bare 'wikitext' rejected by newer huggingface_hub ("Repository id must be 'namespace/name'")
             held_out_ds_config = "wikitext-103-raw-v1"
             held_out_split     = "test[:200]"
             held_out_steps     = 20  # quick — ~30 sec extra per trial
