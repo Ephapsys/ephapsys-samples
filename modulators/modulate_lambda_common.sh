@@ -262,6 +262,27 @@ if [ -n "${AOC_DATASET_PATH:-}" ] && [ -f "$AOC_DATASET_PATH" ]; then
   echo "  → AOC_DATASET_PATH on worker: $remote_path"
 fi
 
+# ── Optional: upload a LOCAL held-out file referenced by HELD_OUT_DS_NAME ──
+# Same mechanism as AOC_DATASET_PATH: if HELD_OUT_DS_NAME is a local file
+# (e.g. a task-aligned identity eval), upload it into REMOTE_DIR/data/ and
+# rewrite HELD_OUT_DS_NAME in the worker's .env to the on-instance path.
+# (The SDK's compute_language_metrics_stream loads it via os.path.isfile.)
+if [ -n "${HELD_OUT_DS_NAME:-}" ] && [ -f "$HELD_OUT_DS_NAME" ]; then
+  echo "📦 Uploading held-out file to instance: $HELD_OUT_DS_NAME"
+  ho_basename="$(basename "$HELD_OUT_DS_NAME")"
+  "${SSH_CMD[@]}" "mkdir -p $REMOTE_DIR/data"
+  "${SCP_CMD[@]}" -C "$HELD_OUT_DS_NAME" "ubuntu@${HOST}:$REMOTE_DIR/data/$ho_basename" 2>/dev/null
+  ho_remote_path="${REMOTE_DIR/#\~/\/home\/ubuntu}/data/$ho_basename"
+  "${SSH_CMD[@]}" "
+    if grep -q '^HELD_OUT_DS_NAME=' $REMOTE_DIR/.env 2>/dev/null; then
+      sed -i 's|^HELD_OUT_DS_NAME=.*|HELD_OUT_DS_NAME=$ho_remote_path|' $REMOTE_DIR/.env
+    else
+      echo 'HELD_OUT_DS_NAME=$ho_remote_path' >> $REMOTE_DIR/.env
+    fi
+  "
+  echo "  → HELD_OUT_DS_NAME on worker: $ho_remote_path"
+fi
+
 # ── Build setup + run scripts (avoid SSH quoting hell) ──────────
 SDK_PACKAGE_SOURCE_LC="$(printf '%s' "$SDK_PACKAGE_SOURCE" | tr '[:upper:]' '[:lower:]')"
 REMOTE_SETUP_SCRIPT="$(mktemp "${TEMP_SRC}/setup_remote.XXXXXX.sh")"

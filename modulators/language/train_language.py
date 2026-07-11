@@ -423,8 +423,8 @@ def main():
                 # logic above): multiplicative-only when AOC_GOVERNANCE_MODE
                 # requires indispensability, both variants otherwise.
                 "variant": _allowed_variants,
-                "alpha": {"low": 5.0, "high": 15.0},    # was [0.5, 20.0]; canonical 10.0
-                "beta":  {"low": 0.005, "high": 0.02},  # was [0.001, 0.1]; canonical 0.01
+                "alpha": {"low": 0.0, "high": 1.0},     # small-alpha (capability regime); was [5.0, 15.0]
+                "beta":  {"low": 0.0, "high": 0.02},    # was [0.005, 0.02]
             },
         }
 
@@ -564,7 +564,9 @@ def main():
     indisp_alpha = float(indisp_cfg.get("alpha", 10.0))
     indisp_beta = float(indisp_cfg.get("beta", 0.01))
     indisp_joint = bool(indisp_cfg.get("joint_training", True))
-    indisp_min_steps = int(indisp_cfg.get("min_steps", 1000))
+    # INDISP_MIN_STEPS env overrides the template value so short local trials
+    # (e.g. 50 steps) can still engage the indispensability loss.
+    indisp_min_steps = int(os.getenv("INDISP_MIN_STEPS", indisp_cfg.get("min_steps", 1000)))
 
     phase("Modulation job")
     print(f"  {DIM}Job ID:    {job_id}{RESET}")
@@ -693,7 +695,9 @@ def main():
                         total = mask.sum().item()
 
                 acc = (correct / total) if total > 0 else 0.0
-                ppl = math.exp(loss.item())
+                # exp() overflows (OverflowError) past ~709 — a diverged trial
+                # would crash the whole loop before the NaN sentinel runs.
+                ppl = math.exp(min(loss.item(), 700.0))
 
                 # --- Indispensable mode: use Family D loss ---
                 if is_indispensable and step_idx >= indisp_min_steps:
@@ -866,11 +870,25 @@ def main():
         budget = int((recipe.get("search") or {}).get("budget", 0) or 20)
 
         while True:
+            # FIX (2026-07-11): deepcopy the PRISTINE model FIRST, then inject
+            # into the copy. Injecting into the shared original before copying
+            # (a) stacked one more forward hook per trial — trial N ran N
+            # compounded modulations — and (b) the hook closure bound the
+            # ORIGINAL model's Λ, so the copy's Λ never received gradients
+            # (ΔΛ=0) and the zero-Λ ablation zeroed an unused tensor (gap≡0).
+            # `model` now stays pristine for the entire search; every trial
+            # starts from an identical single-hook state.
+            # Fixed per-trial seed → identical config ⇒ identical result
+            # (reproducible objective for the Bayesian search).
+            torch.manual_seed(int(os.getenv("AOC_TRIAL_SEED", "42")))
+            model_trial = deepcopy(model)
+            encoder_trial = model_trial.get_encoder() if is_seq2seq else model_trial
             trial_cfg = mc.inject_ecm_from_trial(
-                job_id, encoder,
+                job_id, encoder_trial,
                 last_cfg=last_cfg, last_score=last_score
             )
             if not trial_cfg:
+                del model_trial
                 print("\n[INFO] No more trials. Auto mode loop finished.")
                 break
 
@@ -886,12 +904,9 @@ def main():
             if "alpha" in trial_cfg or "beta" in trial_cfg:
                 print(f"  {DIM}[INDISP] trial α={trial_alpha} β={trial_beta} (AOC-proposed){RESET}")
 
-            # For training-enabled trials, we can (optionally) isolate updates by copying the model.
-            # This avoids cross-trial contamination of weights.
             # Indispensable mode forces training — ECM must become load-bearing.
+            # (model_trial/encoder_trial already created above, BEFORE injection.)
             use_training = args.train or is_indispensable
-            model_trial = deepcopy(model) if use_training else model
-            encoder_trial = model_trial.get_encoder() if is_seq2seq else model_trial
 
             # Inspect Λ before modulation/training
             lambda_before = inspect_lambda(model_trial, label=f"Λ (trial {trial_num} before)")
@@ -960,7 +975,9 @@ def main():
                             total = mask.sum().item()
 
                     acc = (correct / total) if total > 0 else 0.0
-                    ppl = math.exp(loss.item())
+                    # exp() overflows past ~709 — a diverged trial would crash
+                    # the whole search loop before the NaN sentinel runs.
+                    ppl = math.exp(min(loss.item(), 700.0))
 
                     # --- Indispensable mode: use Family D loss ---
                     if is_indispensable and step_idx >= indisp_min_steps:
@@ -1064,6 +1081,12 @@ def main():
                 delta = torch.linalg.norm(lambda_after - lambda_before).item()
                 print(f"[ΔΛ] Change during trial {trial_num}: {delta:.6f}")
 
+            # FIX (2026-07-11): evals must run without dropout. .train() was
+            # never undone, so held-out and zero-Λ evals ran with dropout
+            # active — pure noise injected into the trial score and the
+            # indispensability gap.
+            model_trial.eval()
+
             last = metrics_stream[-1] if metrics_stream else {}
 
             # ── Held-out evaluation (was: in-distribution score) ─────
@@ -1090,10 +1113,13 @@ def main():
             # Configurations that memorize the training data will look great
             # on the in-distribution training stream but blow up on this
             # held-out PPL — exactly the failure mode we want AOC to avoid.
-            held_out_ds_name   = "Salesforce/wikitext"  # bare 'wikitext' rejected by newer huggingface_hub ("Repository id must be 'namespace/name'")
-            held_out_ds_config = "wikitext-103-raw-v1"
-            held_out_split     = "test[:200]"
-            held_out_steps     = 20  # quick — ~30 sec extra per trial
+            # Held-out anchor is env-configurable (default WikiText). Must be an
+            # HF dataset (name/config/split) — the AOC backend fetches it; local
+            # files are NOT supported here. Set HELD_OUT_DS_NAME/CONFIG/SPLIT/STEPS.
+            held_out_ds_name   = os.environ.get("HELD_OUT_DS_NAME")   or "Salesforce/wikitext"
+            held_out_ds_config = os.environ.get("HELD_OUT_DS_CONFIG") or "wikitext-103-raw-v1"
+            held_out_split     = os.environ.get("HELD_OUT_SPLIT")     or "test[:200]"
+            held_out_steps     = int(os.environ.get("HELD_OUT_STEPS") or "20")
             held_out_last = None
             try:
                 held_out_stream = []
