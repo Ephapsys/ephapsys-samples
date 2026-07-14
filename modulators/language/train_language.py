@@ -418,7 +418,10 @@ def main():
                 "epsilon": {"low": 0.3, "high": 0.8},   # was [0.0, 2.0]; canonical 0.5
                 "lambda0": {"low": 0.1, "high": 0.4},   # was [0.0, 0.5]; canonical 0.2296
                 "phi": ["identity", "relu", "tanh", "silu", "gelu"],
-                "ecm_init": ["transpose", "identity", "random"],
+                # "transpose" dropped from search: it's a mislabeled anti-diagonal
+                # (np.eye[::-1]), not a real Wᵀ init — correct init tracked separately.
+                # Canonical run uses identity anyway.
+                "ecm_init": ["identity", "random"],
                 # Variant set is governance-mode-dependent (see _allowed_variants
                 # logic above): multiplicative-only when AOC_GOVERNANCE_MODE
                 # requires indispensability, both variants otherwise.
@@ -567,6 +570,10 @@ def main():
     # INDISP_MIN_STEPS env overrides the template value so short local trials
     # (e.g. 50 steps) can still engage the indispensability loss.
     indisp_min_steps = int(os.getenv("INDISP_MIN_STEPS", indisp_cfg.get("min_steps", 1000)))
+    # Objective selector (back-compat default reproduces the reference runs):
+    #   "dispensability" = legacy unbounded divergence; "hinge" = bounded gap.
+    indisp_objective = os.getenv("INDISP_OBJECTIVE", indisp_cfg.get("objective", "dispensability"))
+    indisp_margin = float(os.getenv("INDISP_MARGIN", indisp_cfg.get("margin", 0.5)))
 
     phase("Modulation job")
     print(f"  {DIM}Job ID:    {job_id}{RESET}")
@@ -703,6 +710,7 @@ def main():
                 if is_indispensable and step_idx >= indisp_min_steps:
                     indisp_result = compute_indispensability_loss(
                         model, inputs, alpha=indisp_alpha, beta=indisp_beta,
+                        margin=indisp_margin, objective=indisp_objective,
                     )
                     final_loss = indisp_result["total_loss"]
                     indisp_val = indisp_result["indispensability_loss"].item()
@@ -985,6 +993,7 @@ def main():
                         # (or fall back to indisp_alpha/indisp_beta defaults).
                         indisp_result = compute_indispensability_loss(
                             model_trial, inputs, alpha=trial_alpha, beta=trial_beta,
+                            margin=indisp_margin, objective=indisp_objective,
                         )
                         final_loss = indisp_result["total_loss"]
                         indisp_val = indisp_result["indispensability_loss"].item()
