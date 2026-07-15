@@ -426,7 +426,7 @@ def main():
                 # logic above): multiplicative-only when AOC_GOVERNANCE_MODE
                 # requires indispensability, both variants otherwise.
                 "variant": _allowed_variants,
-                "alpha": {"low": 0.0, "high": 1.0},     # small-alpha (capability regime); was [5.0, 15.0]
+                "alpha": {"low": 0.05, "high": 1.0},    # α-floor: exclude α=0 (non-indispensable fine-tune wins); was [0.0,1.0], orig [5.0,15.0]
                 "beta":  {"low": 0.0, "high": 0.02},    # was [0.005, 0.02]
             },
         }
@@ -708,8 +708,12 @@ def main():
 
                 # --- Indispensable mode: use Family D loss ---
                 if is_indispensable and step_idx >= indisp_min_steps:
+                    # Pass labels so the SDK's WITH-ECM forward produces a real
+                    # CE task loss; without them task_loss silently falls back to
+                    # 0 and the objective degenerates to pure divergence.
+                    indisp_inputs = {**inputs, "labels": inputs["input_ids"].clone()}
                     indisp_result = compute_indispensability_loss(
-                        model, inputs, alpha=indisp_alpha, beta=indisp_beta,
+                        model, indisp_inputs, alpha=indisp_alpha, beta=indisp_beta,
                         margin=indisp_margin, objective=indisp_objective,
                     )
                     final_loss = indisp_result["total_loss"]
@@ -991,8 +995,12 @@ def main():
                     if is_indispensable and step_idx >= indisp_min_steps:
                         # trial_alpha/trial_beta carry AOC's per-trial proposal
                         # (or fall back to indisp_alpha/indisp_beta defaults).
+                        # Pass labels so the WITH-ECM forward yields a real CE
+                        # task loss (else task_loss silently becomes 0 and the
+                        # objective degenerates to pure divergence).
+                        indisp_inputs = {**inputs, "labels": inputs["input_ids"].clone()}
                         indisp_result = compute_indispensability_loss(
-                            model_trial, inputs, alpha=trial_alpha, beta=trial_beta,
+                            model_trial, indisp_inputs, alpha=trial_alpha, beta=trial_beta,
                             margin=indisp_margin, objective=indisp_objective,
                         )
                         final_loss = indisp_result["total_loss"]
