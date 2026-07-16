@@ -426,7 +426,7 @@ def main():
                 # logic above): multiplicative-only when AOC_GOVERNANCE_MODE
                 # requires indispensability, both variants otherwise.
                 "variant": _allowed_variants,
-                "alpha": {"low": 0.05, "high": 1.0},    # α-floor: exclude α=0 (non-indispensable fine-tune wins); was [0.0,1.0], orig [5.0,15.0]
+                "alpha": {"low": 0.05, "high": 5.0},    # α-floor: exclude α=0 (non-indispensable fine-tune wins); was [0.0,1.0], orig [5.0,15.0]
                 "beta":  {"low": 0.0, "high": 0.02},    # was [0.005, 0.02]
             },
         }
@@ -877,6 +877,7 @@ def main():
         phase("Ephaptic modulation (auto mode)")
         print(f"  {BLUE}>{RESET} Running Bayesian search over EC-ANN configurations")
         best_score, best_metrics, best_variant, best_stream = None, None, None, None
+        best_model = None  # retained ref to the winning trial's ECM-injected model
         last_cfg, last_score = None, None
         trial_num = 0
         budget = int((recipe.get("search") or {}).get("budget", 0) or 20)
@@ -1201,31 +1202,87 @@ def main():
                     if name in saved_lambda:
                         param.data.copy_(saved_lambda[name])
 
-            if held_out_last is not None:
-                # Held-out score: same accuracy-minus-loss form, but on text
-                # the trial never trained on. Higher = better generalization.
-                base_score = held_out_last.get("accuracy", 0.0) - held_out_last.get("loss", 0.0)
+            # ── Constrained score (Requirement #1) ──────────────────────────
+            # Select configs that are USABLE with Λ (loss_with ≤ τ) AND that
+            # DEGRADE without Λ (gap = loss_without − loss_with ≥ δ_min).
+            # Ordering guarantee: every unusable config (loss_with > τ) scores
+            # in [-3,-1], strictly below every usable config ([0,1]) — so no
+            # loss_with > τ config can ever be selected as best, regardless of
+            # its gap. Score is bounded to [-3, 1] for GP stability. Accuracy
+            # is NOT used in the score (reporting only, kept in `last`).
+            def _clamp(x, lo, hi):
+                return max(lo, min(hi, x))
 
-                # Indispensability bonus: how much worse is the model without Λ?
-                # Positive = Λ contributes; negative = Λ is harmful.
-                # Combined: AOC picks configs that maximize
-                #   (acc_with − loss_with) + α·(loss_without − loss_with)
-                # which expands to acc_with − (1+α)·loss_with + α·loss_without
-                # — naturally double-weights "model works with Λ" while still
-                # rewarding "model breaks without Λ". α is configurable so we
-                # can tune the trade-off without code changes.
-                indisp_gap = 0.0
-                if held_out_no_lambda_last is not None:
-                    loss_with = held_out_last.get("loss", 0.0)
-                    loss_without = held_out_no_lambda_last.get("loss", 0.0)
-                    indisp_gap = loss_without - loss_with
-                    last["indispensability_gap"] = indisp_gap
-                alpha_indisp = float(os.getenv("AOC_INDISPENSABILITY_WEIGHT", "1.0"))
-                score = base_score + alpha_indisp * indisp_gap
-                score_source = "held_out+indispensability" if held_out_no_lambda_last is not None else "held_out"
+            def _finite(v):
+                return isinstance(v, (int, float)) and math.isfinite(v)
+
+            # τ: absolute override (AOC_USABILITY_TAU), else a FIXED pre-Λ
+            # baseline · (1+ε) computed ONCE from the pristine (Λ-free) model
+            # on the held-out set and cached on the client.
+            _tau_abs = os.getenv("AOC_USABILITY_TAU")
+            if _tau_abs:
+                base_loss = None
+                tau = float(_tau_abs)
             else:
-                score = last.get("accuracy", 0.0) - last.get("loss", 0.0)
-                score_source = "in_distribution_fallback"
+                base_loss = getattr(mc, "_aoc_base_loss", None)
+                if base_loss is None:
+                    try:
+                        _bstream = list(mc.compute_language_metrics_stream(
+                            model, tokenizer, args.model_template_id,
+                            ds_name=held_out_ds_name, ds_config=held_out_ds_config,
+                            ds_split=held_out_split, steps=held_out_steps,
+                        ))
+                        base_loss = float(_bstream[-1].get("loss")) if _bstream else None
+                    except Exception as e:
+                        print(f"[WARN] base-loss eval failed ({e}); using AOC_USABILITY_TAU_FALLBACK")
+                        base_loss = None
+                    setattr(mc, "_aoc_base_loss", base_loss)
+                _eps = float(os.getenv("AOC_USABILITY_EPS", "0.15"))
+                tau = (base_loss * (1.0 + _eps)) if _finite(base_loss) \
+                    else float(os.getenv("AOC_USABILITY_TAU_FALLBACK", "3.5"))
+
+            delta_min = float(os.getenv("AOC_MIN_GAP", "1.0"))
+            gap_cap = float(os.getenv("AOC_GAP_CAP", "8.0"))
+            if gap_cap <= delta_min:
+                gap_cap = delta_min + 1.0
+
+            loss_with = held_out_last.get("loss") if held_out_last is not None else None
+            loss_without = held_out_no_lambda_last.get("loss") if held_out_no_lambda_last is not None else None
+            gap = (loss_without - loss_with) if (_finite(loss_with) and _finite(loss_without)) else None
+            last["indispensability_gap"] = gap
+
+            if not _finite(loss_with):
+                # No held-out (with-Λ) signal → can't judge usability; reject.
+                score = -3.0
+                score_source = "no_usable_signal"
+            elif not _finite(gap):
+                # Usable-looking, but the no-Λ eval failed → degradation is
+                # UNVERIFIED. Reject (−3): a config with no confirmed "bad
+                # without Λ" must never score as usable or be selected best.
+                score = -3.0
+                score_source = "no_degradation_signal"
+            elif loss_with <= tau:
+                g = gap
+                if g < delta_min:
+                    # usable but not degrading enough → low positive band [0, 0.1)
+                    score = 0.1 * _clamp(g / delta_min if delta_min > 0 else 0.0, 0.0, 1.0)
+                else:
+                    # usable AND indispensable → [0.1, 1], rewarding a bigger gap
+                    score = 0.1 + 0.9 * _clamp((g - delta_min) / (gap_cap - delta_min), 0.0, 1.0)
+                score_source = "usable"
+            else:
+                # unusable with Λ → strictly below any usable config, in [-3, -1]
+                overage = loss_with - tau
+                score = -1.0 - 2.0 * _clamp(overage / max(tau, 1e-6), 0.0, 1.0)
+                score_source = "unusable"
+
+            if not math.isfinite(score):
+                score = -3.0
+            print(f"[SCORE] Trial {trial_num}/{budget} base_loss="
+                  f"{round(base_loss,4) if _finite(base_loss) else 'n/a'} tau={round(tau,4)} "
+                  f"loss_with={round(loss_with,4) if _finite(loss_with) else 'n/a'} "
+                  f"loss_without={round(loss_without,4) if _finite(loss_without) else 'n/a'} "
+                  f"gap={round(gap,4) if _finite(gap) else 'n/a'} score={round(score,4)} ({score_source})")
 
             # Sanitize NaN/Inf before reporting to AOC. Random-init Λ at high
             # norms can diverge during training (loss → NaN); the SDK's
@@ -1234,7 +1291,7 @@ def main():
             # rest of the search budget. Convert NaN/Inf to a "very bad"
             # finite score so AOC's Bayesian prior learns to avoid that
             # region and the loop continues. See ephapsys-research#6.
-            NAN_SENTINEL_SCORE = -1e9
+            NAN_SENTINEL_SCORE = -3.0  # bounded worst (keeps score in [-3,1] for GP stability)
             def _sanitize(v):
                 if v is None:
                     return v
@@ -1255,14 +1312,24 @@ def main():
             if best_score is None or score > best_score:
                 best_score, best_metrics, best_variant = score, last, trial_cfg
                 best_stream = list(metrics_stream)
+                best_model = model_trial  # keep the trained, ECM-injected winner (ref survives next deepcopy)
                 print(f"{GREEN}[BEST] Updated best score={best_score:.3f}, config={best_variant}{RESET}")
 
         if best_metrics:
             total_runtime = time.time() - start_time
             summary["runtime_secs"] = round(total_runtime, 2)
 
+            # Use the winning trial's actual ECM-injected model for the probe
+            # and certification — auto mode never injects into the pristine
+            # `model`, so certifying `model` would ship a Λ-free artifact and
+            # the ablation probe would read separation 1.0 / governance "none".
+            final_model = best_model if best_model is not None else model
+            try:
+                final_model.eval()
+            except Exception:
+                pass
             print("[DIAGNOSTIC] Final Λ (best variant):")
-            inspect_lambda(model if not args.train else model, label="Λ (final best)")
+            inspect_lambda(final_model, label="Λ (final best)")
 
             #  Build a strict exp_config for provenance (no None fields)
             exp_cfg = {
@@ -1315,7 +1382,7 @@ def main():
                     "What is your name?", return_tensors="pt", truncation=True, max_length=64
                 ).to(device)
                 probe_inputs["labels"] = probe_inputs["input_ids"].clone()
-                indisp_metrics = run_ablation_probe(model, probe_inputs, tokenizer)
+                indisp_metrics = run_ablation_probe(final_model, probe_inputs, tokenizer)
                 strength = indisp_metrics.get("governance_strength", "unknown")
                 sep = indisp_metrics.get("separation_ratio", 0)
                 print(f"  {BOLD}Governance Strength: {strength.upper()}{RESET}")
@@ -1326,7 +1393,7 @@ def main():
 
             mc.finalize_and_certify(
                 run_dir,
-                model,            # keep main model artifact; Λ digests are uploaded separately
+                final_model,      # winning trial's ECM-injected model (has Λ → ecm.pt saved, real ablation)
                 tokenizer,
                 best_metrics,
                 exp_cfg["variant"],
