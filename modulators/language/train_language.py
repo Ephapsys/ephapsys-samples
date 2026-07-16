@@ -426,7 +426,7 @@ def main():
                 # logic above): multiplicative-only when AOC_GOVERNANCE_MODE
                 # requires indispensability, both variants otherwise.
                 "variant": _allowed_variants,
-                "alpha": {"low": 0.05, "high": 5.0},    # α-floor: exclude α=0 (non-indispensable fine-tune wins); was [0.0,1.0], orig [5.0,15.0]
+                "alpha": {"low": 0.05, "high": 2.5},    # α-floor excludes α=0; upper capped 5.0→2.5 (constrained score rejects over-wrecked high-α; usable+indispensable sweet spot ~0.5–2.5)
                 "beta":  {"low": 0.0, "high": 0.02},    # was [0.005, 0.02]
             },
         }
