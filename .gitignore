@@ -51,3 +51,19 @@ agents/helloworld/demo/build_pptx.py
 
 # Local team-brief notes (kept out of repo)
 agents/helloworld/A2A_PEER_NOTES.md
+
+# Local environment files may contain credentials. Commit templates only.
+.env
+.env.*
+.env-*
+.env~
+*.env
+*.env.*
+*.env-*
+*.env~
+!.env.example
+!.env.*.example
+!.env-*.example
+!*.env.example
+!*.env.*.example
+!*.env-*.example
