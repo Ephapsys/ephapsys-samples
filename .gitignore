@@ -67,3 +67,10 @@ agents/helloworld/A2A_PEER_NOTES.md
 !*.env.example
 !*.env.*.example
 !*.env-*.example
+
+# Credential material — never commit, even locally generated.
+*.pem
+*.key
+id_rsa
+id_ed25519
+secrets.json
