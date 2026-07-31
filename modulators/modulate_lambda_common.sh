@@ -227,7 +227,7 @@ rsync -a --delete \
 # ── Upload to instance ──────────────────────────────────────────
 echo "📂 Copying modulator sample files to instance..."
 "${SSH_CMD[@]}" "mkdir -p $REMOTE_BASE_DIR $REMOTE_DIR"
-"${SCP_CMD[@]}" -r -C "$TEMP_SRC/modulator/." "ubuntu@${HOST}:$REMOTE_DIR/" 2>/dev/null
+"${SCP_CMD[@]}" -r -C "$TEMP_SRC/modulator/"* "ubuntu@${HOST}:$REMOTE_DIR/"
 [ -f "$TEMP_SRC/common/modulate_local_common.sh" ] && \
   "${SCP_CMD[@]}" -C "$TEMP_SRC/common/modulate_local_common.sh" "ubuntu@${HOST}:$REMOTE_BASE_DIR/modulate_local_common.sh" 2>/dev/null
 [ -f "$TEMP_SRC/common/requirements.lambda.txt" ] && \
@@ -260,6 +260,27 @@ if [ -n "${AOC_DATASET_PATH:-}" ] && [ -f "$AOC_DATASET_PATH" ]; then
     fi
   "
   echo "  → AOC_DATASET_PATH on worker: $remote_path"
+fi
+
+# ── Optional: upload a LOCAL held-out file referenced by HELD_OUT_DS_NAME ──
+# Same mechanism as AOC_DATASET_PATH: if HELD_OUT_DS_NAME is a local file
+# (e.g. a task-aligned identity eval), upload it into REMOTE_DIR/data/ and
+# rewrite HELD_OUT_DS_NAME in the worker's .env to the on-instance path.
+# (The SDK's compute_language_metrics_stream loads it via os.path.isfile.)
+if [ -n "${HELD_OUT_DS_NAME:-}" ] && [ -f "$HELD_OUT_DS_NAME" ]; then
+  echo "📦 Uploading held-out file to instance: $HELD_OUT_DS_NAME"
+  ho_basename="$(basename "$HELD_OUT_DS_NAME")"
+  "${SSH_CMD[@]}" "mkdir -p $REMOTE_DIR/data"
+  "${SCP_CMD[@]}" -C "$HELD_OUT_DS_NAME" "ubuntu@${HOST}:$REMOTE_DIR/data/$ho_basename" 2>/dev/null
+  ho_remote_path="${REMOTE_DIR/#\~/\/home\/ubuntu}/data/$ho_basename"
+  "${SSH_CMD[@]}" "
+    if grep -q '^HELD_OUT_DS_NAME=' $REMOTE_DIR/.env 2>/dev/null; then
+      sed -i 's|^HELD_OUT_DS_NAME=.*|HELD_OUT_DS_NAME=$ho_remote_path|' $REMOTE_DIR/.env
+    else
+      echo 'HELD_OUT_DS_NAME=$ho_remote_path' >> $REMOTE_DIR/.env
+    fi
+  "
+  echo "  → HELD_OUT_DS_NAME on worker: $ho_remote_path"
 fi
 
 # ── Build setup + run scripts (avoid SSH quoting hell) ──────────

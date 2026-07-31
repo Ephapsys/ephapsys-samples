@@ -6,7 +6,7 @@
   "ephaptic_factor": 0.7,
   "lambda_ecm": 0.02,
   "phi_type": "tanh",
-  "ecm_init_type": "transpose",
+  "ecm_init_type": "identity",
   "lambda_refresh": 250,
   "rdel_lr": 0.0,
   "device": "cuda",
