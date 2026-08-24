@@ -14,7 +14,7 @@ MODE="local"
 GPU="t4"
 IDEMPOTENT=1
 FORCE_MODULATE=0
-FORCE_REGISTER=0
+FORCE_REGISTER="${FORCE_REGISTER:-0}"   # also settable from the environment
 SKIP_BUILD_FLAG=""
 SKIP_PUSH_FLAG=""
 LABEL=""
@@ -298,10 +298,13 @@ resolve_model_template() {
   # Old behavior preserved as comment in case healthy filter ever needs
   # to be relaxed:
   #   | map(select(... model_kind match AND repo|name match))
-  fetch_model_templates | jq -r --arg repo "$MODEL_REPO" --arg kind "$MODEL_KIND" --arg name "$MODEL_NAME" '
+  fetch_model_templates | jq -r --arg repo "$MODEL_REPO" --arg kind "$MODEL_KIND" --arg name "$MODEL_NAME" --arg strict "$FORCE_REGISTER" '
     (.items // [])
     | map(select((((.model_kind // .kind // "") | ascii_downcase) == ($kind | ascii_downcase))
-      and ((.source_repo // "") == $repo or (.name // "") == $name or (.name // "") == ("HuggingFace " + $repo))
+      and (if $strict == "1"
+             then ((.name // "") == $name)
+             else ((.source_repo // "") == $repo or (.name // "") == $name or (.name // "") == ("HuggingFace " + $repo))
+           end)
       and (((.status // "") | ascii_upcase) == "REGISTERED")))
     | sort_by(.created_at // 0)
     | last
