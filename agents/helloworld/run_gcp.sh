@@ -193,12 +193,13 @@ if [ -z "${AOC_API_URL:-}" ] && [ -n "${AOC_BASE_URL:-}" ]; then
   AOC_API_URL="${AOC_BASE_URL}"
 fi
 export AOC_API_URL AOC_BASE_URL AOC_ORG_ID AOC_PROVISIONING_TOKEN AGENT_TEMPLATE_ID PERSONALIZE_ANCHOR
-HSM_KMS_KEY="${HSM_KMS_KEY:-}"
-HSM_KMS_ENDPOINT="${HSM_KMS_ENDPOINT:-}"
-HSM_KMS_CREDENTIALS="${HSM_KMS_CREDENTIALS:-}"
-HSM_SLOT="${HSM_SLOT:-}"
-HSM_KEY_LABEL="${HSM_KEY_LABEL:-}"
-export HSM_KMS_KEY HSM_KMS_ENDPOINT HSM_KMS_CREDENTIALS HSM_SLOT HSM_KEY_LABEL
+# PKCS#11 (hsm anchor). PKCS11_SOFTHSM_DEV=1 (default) creates a SoftHSM DEV token on the VM:
+# a software token for testing, NOT hardware-backed. For a real token set PKCS11_SOFTHSM_DEV=0 and
+# PKCS11_MODULE / PKCS11_TOKEN_LABEL / PKCS11_PIN_FILE to the device's values.
+PKCS11_SOFTHSM_DEV="${PKCS11_SOFTHSM_DEV:-1}"
+PKCS11_TOKEN_LABEL="${PKCS11_TOKEN_LABEL:-helloworld}"
+PKCS11_SIGN_KEY_LABEL="${PKCS11_SIGN_KEY_LABEL:-helloworld-sign}"
+PKCS11_KEM_KEY_LABEL="${PKCS11_KEM_KEY_LABEL:-helloworld-kem}"
 RAW_ANCHOR="${PERSONALIZE_ANCHOR:-none}"
 ANCHOR_SUFFIX="$(echo "$RAW_ANCHOR" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')"
 ANCHOR_SUFFIX="$(echo "$ANCHOR_SUFFIX" | sed 's/^-*//; s/-*$//')"
@@ -227,56 +228,20 @@ case "$ANCHOR_TYPE" in
 esac
 
 if $ANCHOR_IS_HSM; then
-  if [ -z "${HSM_HELPER:-}" ] && [ -z "${HSM_KMS_KEY:-}" ]; then
-    info "HSM_KMS_KEY not set; attempting automatic Cloud KMS provisioning..."
-    if [ -z "${COMPUTE_SERVICE_ACCOUNT:-}" ]; then
-      PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)' 2>/dev/null || true)"
-      if [ -n "$PROJECT_NUMBER" ]; then
-        COMPUTE_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-      else
-        printf "${MAGENTA}❌ Unable to determine project number. Set COMPUTE_SERVICE_ACCOUNT and rerun.${RESET}\n"
-        exit 1
-      fi
-    fi
-    PROVISION_ARGS=(
-      --project "$PROJECT_ID"
-      --service-account "$COMPUTE_SERVICE_ACCOUNT"
-      --location "$HSM_KMS_LOCATION"
-      --keyring "$HSM_KMS_KEY_RING"
-      --key "$HSM_KMS_KEY_NAME"
-    )
-    if [ "${HSM_KMS_USE_HSM}" = "1" ]; then
-      PROVISION_ARGS+=(--hsm)
-    fi
-    PROVISION_OUTPUT="$("$SCRIPT_DIR/provision_kms_key.sh" "${PROVISION_ARGS[@]}")"
-    echo "$PROVISION_OUTPUT"
-    HSM_KMS_KEY="$(echo "$PROVISION_OUTPUT" | awk -F= '/^HSM_KMS_KEY=/{print $2}' | tail -n1)"
-    if [ -z "$HSM_KMS_KEY" ]; then
-      printf "${MAGENTA}❌ provision_kms_key.sh did not return an HSM_KMS_KEY. Aborting.${RESET}\n"
-      exit 1
-    fi
-    export HSM_KMS_KEY
-    info "🔐 Auto-provisioned Cloud KMS key: ${HSM_KMS_KEY}"
-  fi
-  if [ -z "${HSM_HELPER:-}" ]; then
-    if [ -z "${HSM_KMS_KEY:-}" ]; then
-      printf "${MAGENTA}❌ HSM_KMS_KEY is still unset. Provide it in your env or set HSM_HELPER.${RESET}\n"
-      exit 1
-    fi
-    info "🔐 HSM mode: using Cloud KMS key ${HSM_KMS_KEY}"
-  else
-    info "🔐 HSM mode: using custom helper command (${HSM_HELPER})"
-  fi
-fi
-
-LOCAL_KMS_CREDS="${HSM_KMS_CREDENTIALS:-}"
-REMOTE_KMS_CREDS=""
-if $ANCHOR_IS_HSM && [ -n "$LOCAL_KMS_CREDS" ]; then
-  if [ ! -f "$LOCAL_KMS_CREDS" ]; then
-    printf "${MAGENTA}❌ HSM_KMS_CREDENTIALS points to %s but the file was not found.${RESET}\n" "$LOCAL_KMS_CREDS"
+  if [ -n "${HSM_KMS_KEY:-}" ] || [ -n "${HSM_HELPER:-}" ]; then
+    printf "${MAGENTA}❌ HelloWorld now uses PKCS#11 for PERSONALIZE_ANCHOR=hsm. Remove HSM_KMS_KEY / HSM_HELPER from %s (see README: \"HSM anchor (PKCS#11)\").${RESET}\n" "$ACTIVE_ENV_FILE"
     exit 1
   fi
-  REMOTE_KMS_CREDS="~/${REMOTE_DIR}/.secrets/kms-credentials.json"
+  if [ "$PKCS11_SOFTHSM_DEV" != "1" ] && { [ -z "${PKCS11_MODULE:-}" ] || [ -z "${PKCS11_PIN_FILE:-}" ]; }; then
+    printf "${MAGENTA}❌ PKCS11_SOFTHSM_DEV=0 requires PKCS11_MODULE and PKCS11_PIN_FILE for the VM's token.${RESET}\n"
+    exit 1
+  fi
+  if [ "$PKCS11_SOFTHSM_DEV" = "1" ]; then
+    warn "🔐 HSM mode: PKCS#11 with a SoftHSM DEV token on the VM (software token for testing, NOT hardware-backed)"
+  else
+    info "🔐 HSM mode: PKCS#11 module ${PKCS11_MODULE} on the VM"
+  fi
+  info "An AOC tenant administrator must enroll the device key during this run (ephapsys login as an admin)."
 fi
 
 CURRENT_ACCOUNT="$(gcloud config get-value account 2>/dev/null || true)"
@@ -310,6 +275,10 @@ SDK_VERSION="$(python3 -c 'from importlib.metadata import version; print(version
 
 if [[ "$SDK_VERSION" == "0.0.0" || -z "$SDK_VERSION" ]]; then
   printf "${MAGENTA}❌ Unable to determine SDK version. Install ephapsys first: pip install ephapsys${RESET}\n"
+  exit 1
+fi
+if $ANCHOR_IS_HSM && ! python3 -c 'import sys; v=tuple(int(x) for x in sys.argv[1].split(".")[:3]); sys.exit(0 if v >= (0, 2, 100) else 1)' "$SDK_VERSION" 2>/dev/null; then
+  printf "${MAGENTA}❌ PKCS#11 needs ephapsys >= 0.2.100 (local venv has %s). Run: %s/bin/pip install -U 'ephapsys[pkcs11]'${RESET}\n" "$SDK_VERSION" "$VENV_DIR"
   exit 1
 fi
 
@@ -563,35 +532,38 @@ if ! wait_for_ssh 24 5 "mkdir -p ~/${REMOTE_DIR}"; then
   exit 1
 fi
 
-if [ -n "$REMOTE_KMS_CREDS" ]; then
-  info "🔐 Uploading Cloud KMS credentials to VM"
-  "${SSH_CMD[@]}" "mkdir -p ~/${REMOTE_DIR}/.secrets && chmod 700 ~/${REMOTE_DIR}/.secrets"
-  gcloud compute scp "$LOCAL_KMS_CREDS" "${INSTANCE_NAME}:${REMOTE_KMS_CREDS}" \
-    --project="$PROJECT_ID" --zone="$ZONE"
-  gcloud compute ssh "$INSTANCE_NAME" \
-    --project="$PROJECT_ID" \
-    --zone="$ZONE" \
-    --command="chmod 600 ${REMOTE_KMS_CREDS}"
-fi
-
 info "📤 Copying sample files to VM"
 tar -cf - -C "$SCRIPT_DIR" \
   helloworld_agent.py \
   run_local.sh \
   reattach_gcp.sh \
+  pkcs11 \
 | gcloud compute ssh "$INSTANCE_NAME" \
   --project="$PROJECT_ID" --zone="$ZONE" \
   -- "tar -xf - -C ~/${REMOTE_DIR}"
 
 UPLOAD_ENV_FILE="$(mktemp)"
 cp "$ACTIVE_ENV_FILE" "$UPLOAD_ENV_FILE"
-if [ -n "$REMOTE_KMS_CREDS" ]; then
-  cat <<EOF >> "$UPLOAD_ENV_FILE"
-
-# Added by run_gcp.sh for Cloud KMS access on the VM
-HSM_KMS_CREDENTIALS=$REMOTE_KMS_CREDS
-GOOGLE_APPLICATION_CREDENTIALS=$REMOTE_KMS_CREDS
-EOF
+if $ANCHOR_IS_HSM; then
+  # PKCS#11 settings for the VM. $HOME stays literal so it expands on the VM when .env is sourced.
+  {
+    echo ""
+    echo "# Added by run_gcp.sh: PKCS#11 hsm anchor on the VM"
+    echo "PKCS11_TOKEN_LABEL=${PKCS11_TOKEN_LABEL}"
+    echo "PKCS11_SIGN_KEY_LABEL=${PKCS11_SIGN_KEY_LABEL}"
+    echo "PKCS11_KEM_KEY_LABEL=${PKCS11_KEM_KEY_LABEL}"
+    echo "EPHAPSYS_DEVICE_ID=${EPHAPSYS_DEVICE_ID:-$INSTANCE_NAME}"
+    if [ "$PKCS11_SOFTHSM_DEV" = "1" ]; then
+      echo "PKCS11_SOFTHSM_DEV=1"
+      echo 'PKCS11_MODULE=/usr/lib/softhsm/libsofthsm2.so'
+      echo 'SOFTHSM2_CONF=$HOME/'"${REMOTE_DIR}"'/.softhsm/softhsm2.conf'
+      echo 'PKCS11_PIN_FILE=$HOME/'"${REMOTE_DIR}"'/.secrets/pkcs11.pin'
+    else
+      echo "PKCS11_SOFTHSM_DEV=0"
+      echo "PKCS11_MODULE=${PKCS11_MODULE}"
+      echo "PKCS11_PIN_FILE=${PKCS11_PIN_FILE}"
+    fi
+  } >> "$UPLOAD_ENV_FILE"
 fi
 
 info "📄 Uploading env file $(basename "$ACTIVE_ENV_FILE")"
@@ -638,6 +610,7 @@ pip install 'numpy<2'
 TORCH_INSTALL_PLACEHOLDER
 echo -e "${VM_BLUE}[VM] STEP 4/4: Installing Ephapsys SDK + deps (sit tight, this download is hefty)...${VM_RESET}"
 PIP_INSTALL_PLACEHOLDER
+PKCS11_SNIPPET_PLACEHOLDER
 if [ -f .env ]; then
   echo -e "${VM_BLUE}[VM] Loading .env so TrustedAgent can exchange bootstrap credentials${VM_RESET}"
   set -a
@@ -654,7 +627,9 @@ if [ -f .env ]; then
 else
 echo "[VM][WARN] Missing .env on VM; set env vars manually before running."
 fi
-if [ "INTERACTIVE_MODE_PLACEHOLDER" = "true" ]; then
+if [ "HSM_DEFER_START_PLACEHOLDER" = "true" ]; then
+  echo -e "${VM_BLUE}[VM] PKCS#11 anchor: bot start deferred until the device key is enrolled.${VM_RESET}"
+elif [ "INTERACTIVE_MODE_PLACEHOLDER" = "true" ]; then
   echo -e "${VM_BLUE}[VM] Interactive mode requested; skipping background bot launch.${VM_RESET}"
 else
   nohup bash -c 'cd ~/HELLOROOT && source .venv/bin/activate && python helloworld_agent.py >> helloworld.log 2>&1' >/dev/null 2>&1 &
@@ -672,6 +647,23 @@ BOOTSTRAP="${BOOTSTRAP//HELLOROOT/${REMOTE_DIR}}"
 APT_EXTRA_PKGS=""
 if $ANCHOR_IS_TPM; then
   APT_EXTRA_PKGS="libtss2-dev tpm2-tools"
+fi
+PKCS11_BLOCK=""
+if $ANCHOR_IS_HSM; then
+  PROVISION_FLAGS="--out pkcs11_enrollment.json"
+  if [ "$PKCS11_SOFTHSM_DEV" = "1" ]; then
+    APT_EXTRA_PKGS="softhsm2 opensc"
+    PROVISION_FLAGS="--init-softhsm ${PROVISION_FLAGS}"
+  fi
+PKCS11_BLOCK=$(cat <<PKCS
+echo -e "\${VM_BLUE}[VM] PKCS#11: installing python-pkcs11 and provisioning role-separated token keys\${VM_RESET}"
+pip install 'python-pkcs11>=0.7.0' --quiet
+mkdir -p .secrets .softhsm
+chmod 700 .secrets .softhsm
+( set -a; source .env; set +a; python pkcs11/provision_token.py ${PROVISION_FLAGS} >/dev/null )
+echo -e "\${VM_BLUE}[VM] PKCS#11 enrollment record written to ~/${REMOTE_DIR}/pkcs11_enrollment.json\${VM_RESET}"
+PKCS
+)
 fi
 TPM_BLOCK=""
 if $ANCHOR_IS_TPM; then
@@ -699,6 +691,8 @@ BOOTSTRAP="${BOOTSTRAP/ANCHOR_APT_PKGS_PLACEHOLDER/${APT_EXTRA_PKGS}}"
 BOOTSTRAP="${BOOTSTRAP/TPM_SNIPPET_PLACEHOLDER/${TPM_BLOCK}}"
 BOOTSTRAP="${BOOTSTRAP//ANCHOR_KIND_PLACEHOLDER/${ANCHOR_TYPE}}"
 BOOTSTRAP="${BOOTSTRAP//INTERACTIVE_MODE_PLACEHOLDER/${INTERACTIVE}}"
+BOOTSTRAP="${BOOTSTRAP/PKCS11_SNIPPET_PLACEHOLDER/${PKCS11_BLOCK}}"
+BOOTSTRAP="${BOOTSTRAP//HSM_DEFER_START_PLACEHOLDER/${ANCHOR_IS_HSM}}"
 
 TORCH_VERSION="${TORCH_VERSION:-2.2.2}"
 if [ "$CPU_ONLY" = true ]; then
@@ -715,6 +709,25 @@ gcloud compute ssh "$INSTANCE_NAME" \
   --project="$PROJECT_ID" \
   --zone="$ZONE" \
   --command="$BOOTSTRAP"
+
+if $ANCHOR_IS_HSM; then
+  ENROLL_FILE="$(mktemp -t helloworld-enrollment.XXXXXX)"
+  gcloud compute scp "${INSTANCE_NAME}:~/${REMOTE_DIR}/pkcs11_enrollment.json" "$ENROLL_FILE" \
+    --project="$PROJECT_ID" --zone="$ZONE"
+  info "🔐 Operator step: enrolling the VM's PKCS#11 signing key with the AOC (requires an admin 'ephapsys login')"
+  if ! python3 "$SCRIPT_DIR/pkcs11/enroll_device.py" --template "$AGENT_TEMPLATE_ID" --record "$ENROLL_FILE" \
+      --reason "HelloWorld ${INSTANCE_NAME}"; then
+    warn "Device not enrolled; the agent was not started. Enroll it, then start the bot:"
+    warn "  python3 pkcs11/enroll_device.py --template $AGENT_TEMPLATE_ID --record $ENROLL_FILE"
+    warn "  gcloud compute ssh $INSTANCE_NAME --project $PROJECT_ID --zone $ZONE -- 'cd ~/${REMOTE_DIR} && set -a && source .env && set +a && source .venv/bin/activate && nohup python helloworld_agent.py >> helloworld.log 2>&1 &'"
+    exit 1
+  fi
+  if [ "$INTERACTIVE" != true ]; then
+    info "▶️ Starting the HelloWorld agent on the VM"
+    gcloud compute ssh "$INSTANCE_NAME" --project="$PROJECT_ID" --zone="$ZONE" \
+      --command="cd ~/${REMOTE_DIR} && set -a && source .env && set +a && source .venv/bin/activate && (nohup python helloworld_agent.py >> helloworld.log 2>&1 & echo \$! > helloworld.pid)"
+  fi
+fi
 
 if [ "$INTERACTIVE" = true ]; then
   info "Opening interactive session..."

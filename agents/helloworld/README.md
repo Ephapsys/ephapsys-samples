@@ -150,6 +150,53 @@ with the instance ID already filled in.
 - `--a2a-demo` is not supported with `--lambda`. The peer cluster needs
   persistent local peers; use `--a2a-demo` alone (local mode).
 
+## HSM anchor (PKCS#11)
+
+`PERSONALIZE_ANCHOR=hsm` binds the agent to a PKCS#11 token: a TEE-backed token, an HSM, a USB
+token, or a SoftHSM **dev** token (software only, **not** hardware-backed; for testing). Requires
+`ephapsys[pkcs11] >= 0.2.100`.
+
+The token holds two role-separated, non-extractable EC P-256 keys:
+
+- a **sign** key, which proves the device's identity during personalization and device login;
+- a **KEM** key, which receives the key that protects the model's ECM and the encrypted local cache.
+
+Nothing leaves the token. The AOC only trusts a device key that an administrator has **enrolled** first.
+
+### GCP (automated)
+
+Set `PERSONALIZE_ANCHOR=hsm` in `.env`, log in as an AOC administrator (`ephapsys login`), then run
+`./run.sh --gcp`. By default (`PKCS11_SOFTHSM_DEV=1`) `run_gcp.sh`:
+
+1. creates a SoftHSM dev token on the VM and provisions the two keys (`pkcs11/provision_token.py`);
+2. copies the enrollment record back and asks you to confirm the fingerprint, then enrolls the device
+   key with the AOC (`pkcs11/enroll_device.py`, admin session);
+3. starts the agent, which personalizes with the enrolled key and receives its ECM encrypted to the token.
+
+For a real token on the VM, set `PKCS11_SOFTHSM_DEV=0` plus `PKCS11_MODULE`, `PKCS11_TOKEN_LABEL` and
+`PKCS11_PIN_FILE`.
+
+### Any device (manual)
+
+```bash
+pip install "ephapsys[pkcs11]>=0.2.100"
+export PKCS11_MODULE=/path/to/vendor-pkcs11-module.so PKCS11_TOKEN_LABEL=helloworld PKCS11_PIN_FILE=/secure/pkcs11.pin
+export PKCS11_SIGN_KEY_LABEL=helloworld-sign PKCS11_KEM_KEY_LABEL=helloworld-kem EPHAPSYS_DEVICE_ID=my-device-0001
+
+python3 pkcs11/provision_token.py --out enrollment.json        # on the device (creates the keys if absent)
+python3 pkcs11/enroll_device.py --template <AGENT_TEMPLATE_ID> --record enrollment.json   # operator, admin session
+PERSONALIZE_ANCHOR=hsm ./run.sh                                # on the device
+```
+
+For local development without hardware, add `--init-softhsm` and set `SOFTHSM2_CONF` (for example
+`~/.softhsm/softhsm2.conf`). SoftHSM is software only.
+
+Revoke a device with `python3 pkcs11/enroll_device.py --template <id> --record enrollment.json --revoke`.
+Status, manifest, model delivery and new device logins are then refused.
+
+> Earlier versions of this sample used Google Cloud KMS for `hsm`. That path is replaced by PKCS#11;
+> remove `HSM_KMS_*` / `HSM_HELPER` from your `.env`.
+
 ## Required Credentials
 
 Populate `.env` with:
@@ -218,6 +265,8 @@ scene shows and how to read the four-pane tmux layout.
 | `push.sh`                               | Template bootstrap + modulation dispatch                                               |
 | `run_local.sh`                          | Local runtime helper                                                                   |
 | `run_gcp.sh`                            | GCP deployer with VM reuse                                                             |
+| `pkcs11/provision_token.py`             | Provision role-separated PKCS#11 token keys; print the enrollment record              |
+| `pkcs11/enroll_device.py`               | Operator: enroll/revoke a device signing key with the AOC (admin session)              |
 | `run_lambda.sh`                         | Lambda Cloud runtime deployer (persistent VM, billed hourly; supports `--attach`)      |
 | `.env.lambda.example`                   | Template for Lambda credentials + GPU fallback lists                                   |
 | `../../modulators/lib/lambda.sh`        | Shared Lambda Cloud helpers (sourced by `run_lambda.sh` and `modulate_lambda_common.sh`) |
