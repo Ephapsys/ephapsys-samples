@@ -1,6 +1,6 @@
 """pkcs11/provision_token.py against SoftHSM (software token; skipped if SoftHSM/python-pkcs11 are absent).
 
-Run: pytest agents/helloworld/tests/test_pkcs11_provision.py   (needs ephapsys[pkcs11] >= 0.2.100)
+Run: pytest agents/helloworld/tests/test_pkcs11_provision.py   (needs ephapsys[pkcs11] >= 0.3.0)
 """
 import json
 import os

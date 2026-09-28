@@ -277,8 +277,8 @@ if [[ "$SDK_VERSION" == "0.0.0" || -z "$SDK_VERSION" ]]; then
   printf "${MAGENTA}❌ Unable to determine SDK version. Install ephapsys first: pip install ephapsys${RESET}\n"
   exit 1
 fi
-if $ANCHOR_IS_HSM && ! python3 -c 'import sys; v=tuple(int(x) for x in sys.argv[1].split(".")[:3]); sys.exit(0 if v >= (0, 2, 100) else 1)' "$SDK_VERSION" 2>/dev/null; then
-  printf "${MAGENTA}❌ PKCS#11 needs ephapsys >= 0.2.100 (local venv has %s). Run: %s/bin/pip install -U 'ephapsys[pkcs11]'${RESET}\n" "$SDK_VERSION" "$VENV_DIR"
+if $ANCHOR_IS_HSM && ! python3 -c 'import sys; v=tuple(int(x) for x in sys.argv[1].split(".")[:3]); sys.exit(0 if v >= (0, 3, 0) else 1)' "$SDK_VERSION" 2>/dev/null; then
+  printf "${MAGENTA}❌ PKCS#11 needs ephapsys >= 0.3.0 (local venv has %s). Run: %s/bin/pip install -U 'ephapsys[pkcs11]'${RESET}\n" "$SDK_VERSION" "$VENV_DIR"
   exit 1
 fi
 

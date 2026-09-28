@@ -134,7 +134,7 @@ def main() -> None:
     try:
         from ephapsys.crypto.pkcs11 import Pkcs11Config, Pkcs11Provider, spki_sha256_hex
     except ImportError:
-        die('install the SDK with PKCS#11 support: pip install "ephapsys[pkcs11]>=0.2.100"')
+        die('install the SDK with PKCS#11 support: pip install "ephapsys[pkcs11]>=0.3.0"')
     device_id = (os.environ.get("EPHAPSYS_DEVICE_ID") or "").strip()
     if not device_id:
         die("set EPHAPSYS_DEVICE_ID (a stable device identity)")

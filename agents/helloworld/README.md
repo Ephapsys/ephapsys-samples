@@ -154,7 +154,7 @@ with the instance ID already filled in.
 
 `PERSONALIZE_ANCHOR=hsm` binds the agent to a PKCS#11 token: a TEE-backed token, an HSM, a USB
 token, or a SoftHSM **dev** token (software only, **not** hardware-backed; for testing). Requires
-`ephapsys[pkcs11] >= 0.2.100`.
+`ephapsys[pkcs11] >= 0.3.0`.
 
 The token holds two role-separated, non-extractable EC P-256 keys:
 
@@ -179,7 +179,7 @@ For a real token on the VM, set `PKCS11_SOFTHSM_DEV=0` plus `PKCS11_MODULE`, `PK
 ### Any device (manual)
 
 ```bash
-pip install "ephapsys[pkcs11]>=0.2.100"
+pip install "ephapsys[pkcs11]>=0.3.0"
 export PKCS11_MODULE=/path/to/vendor-pkcs11-module.so PKCS11_TOKEN_LABEL=helloworld PKCS11_PIN_FILE=/secure/pkcs11.pin
 export PKCS11_SIGN_KEY_LABEL=helloworld-sign PKCS11_KEM_KEY_LABEL=helloworld-kem EPHAPSYS_DEVICE_ID=my-device-0001
 
