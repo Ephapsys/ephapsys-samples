@@ -545,23 +545,25 @@ tar -cf - -C "$SCRIPT_DIR" \
 UPLOAD_ENV_FILE="$(mktemp)"
 cp "$ACTIVE_ENV_FILE" "$UPLOAD_ENV_FILE"
 if $ANCHOR_IS_HSM; then
-  # PKCS#11 settings for the VM. $HOME stays literal so it expands on the VM when .env is sourced.
+  # PKCS#11 settings for the VM, shell-quoted with printf %q because the VM sources .env with bash.
+  # Only the intended remote $HOME prefix is left unquoted so it expands on the VM.
+  q() { printf '%q' "$1"; }
   {
     echo ""
     echo "# Added by run_gcp.sh: PKCS#11 hsm anchor on the VM"
-    echo "PKCS11_TOKEN_LABEL=${PKCS11_TOKEN_LABEL}"
-    echo "PKCS11_SIGN_KEY_LABEL=${PKCS11_SIGN_KEY_LABEL}"
-    echo "PKCS11_KEM_KEY_LABEL=${PKCS11_KEM_KEY_LABEL}"
-    echo "EPHAPSYS_DEVICE_ID=${EPHAPSYS_DEVICE_ID:-$INSTANCE_NAME}"
+    echo "PKCS11_TOKEN_LABEL=$(q "$PKCS11_TOKEN_LABEL")"
+    echo "PKCS11_SIGN_KEY_LABEL=$(q "$PKCS11_SIGN_KEY_LABEL")"
+    echo "PKCS11_KEM_KEY_LABEL=$(q "$PKCS11_KEM_KEY_LABEL")"
+    echo "EPHAPSYS_DEVICE_ID=$(q "${EPHAPSYS_DEVICE_ID:-$INSTANCE_NAME}")"
     if [ "$PKCS11_SOFTHSM_DEV" = "1" ]; then
       echo "PKCS11_SOFTHSM_DEV=1"
-      echo 'PKCS11_MODULE=/usr/lib/softhsm/libsofthsm2.so'
-      echo 'SOFTHSM2_CONF=$HOME/'"${REMOTE_DIR}"'/.softhsm/softhsm2.conf'
-      echo 'PKCS11_PIN_FILE=$HOME/'"${REMOTE_DIR}"'/.secrets/pkcs11.pin'
+      echo "PKCS11_MODULE=/usr/lib/softhsm/libsofthsm2.so"
+      echo "SOFTHSM2_CONF=\$HOME/$(q "$REMOTE_DIR")/.softhsm/softhsm2.conf"
+      echo "PKCS11_PIN_FILE=\$HOME/$(q "$REMOTE_DIR")/.secrets/pkcs11.pin"
     else
       echo "PKCS11_SOFTHSM_DEV=0"
-      echo "PKCS11_MODULE=${PKCS11_MODULE}"
-      echo "PKCS11_PIN_FILE=${PKCS11_PIN_FILE}"
+      echo "PKCS11_MODULE=$(q "$PKCS11_MODULE")"
+      echo "PKCS11_PIN_FILE=$(q "$PKCS11_PIN_FILE")"
     fi
   } >> "$UPLOAD_ENV_FILE"
 fi
@@ -570,7 +572,11 @@ info "📄 Uploading env file $(basename "$ACTIVE_ENV_FILE")"
 gcloud compute scp "$UPLOAD_ENV_FILE" "${INSTANCE_NAME}:~/${REMOTE_DIR}/.env" \
   --project="$PROJECT_ID" --zone="$ZONE"
 
-if [ "$REUSED_EXISTING_INSTANCE" = true ]; then
+if [ "$REUSED_EXISTING_INSTANCE" = true ] && $ANCHOR_IS_HSM; then
+  # The PKCS#11 path must always run the (idempotent) bootstrap: SDK upgrade, token/keys, enrollment.
+  # A reused VM may still be configured for the old KMS anchor, so the fast path below is skipped.
+  info "♻️ Reused VM with PERSONALIZE_ANCHOR=hsm: running the idempotent PKCS#11 bootstrap and enrollment."
+elif [ "$REUSED_EXISTING_INSTANCE" = true ]; then
   if gcloud compute ssh "$INSTANCE_NAME" \
     --project="$PROJECT_ID" \
     --zone="$ZONE" \
