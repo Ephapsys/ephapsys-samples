@@ -191,7 +191,20 @@ PERSONALIZE_ANCHOR=hsm ./run.sh                                # on the device
 For local development without hardware, add `--init-softhsm` and set `SOFTHSM2_CONF` (for example
 `~/.softhsm/softhsm2.conf`). SoftHSM is software only.
 
-Revoke a device with `python3 pkcs11/enroll_device.py --template <id> --record enrollment.json --revoke`.
+`--record` also accepts the enrollment output of the platform's `pkcs11_device_check.py`, either as JSON or
+as the saved console log, and the output of `ephapsys hsm show-key` (add `--device-id`, which must equal
+`EPHAPSYS_DEVICE_ID` on the device). Pass `--expect-fingerprint <SPKI SHA-256>` with the fingerprint the
+device owner reported, and `--dry-run` to check the record and print the request without sending it:
+
+```bash
+python3 pkcs11/enroll_device.py --template <AGENT_TEMPLATE_ID> --record pkcs11-check-provision.txt \
+  --expect-fingerprint <SIGN_SPKI_SHA256> --dry-run
+```
+
+Until a device is enrolled, personalization fails with `403 device key is not enrolled or is revoked`.
+
+Revoke a device with `python3 pkcs11/enroll_device.py --template <id> --record enrollment.json --revoke`
+(or `--device-id <id> --revoke` without a record).
 Status, manifest, model delivery and new device logins are then refused.
 
 > Earlier versions of this sample used Google Cloud KMS for `hsm`. That path is replaced by PKCS#11;
